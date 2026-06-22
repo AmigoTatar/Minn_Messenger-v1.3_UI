@@ -3,16 +3,24 @@ import { io } from 'socket.io-client';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import ProfilePanel from './components/ProfilePanel';
+import Auth from './Auth'; // Наш новый компонент авторизации
 
-// Подключаемся к нашему Node.js бэкенду на порт 5001
-const socket = io('http://localhost:5001');
+// Инициализируем переменную для сокета, чтобы управлять им внутри хука
+let socket;
 
 const INITIAL_CHATS = [
   { id: "chat_1", name: "Дмитрий (Разработка)", avatar: "👨‍💻", unreadCount: 0, messages: [{ id: "m1", text: "Привет! Как там мессенджер?", sender: "friend", time: "14:15" }] },
   { id: "chat_2", name: "Флудилка (Кофе)", avatar: "☕", unreadCount: 0, messages: [{ id: "m4", text: "Кто пойдет пить кофе?", sender: "friend", time: "15:00" }] },
   { id: "chat_3", name: "Мама", avatar: "❤️", unreadCount: 0, messages: [{ id: "m5", text: "Ты покушал?", sender: "friend", time: "11:02" }] }
 ];
+
 export default function App() {
+  // Стейт авторизации: проверяем localStorage, чтобы сессия не сбрасывалась при перезагрузке
+  const [user, setUser] = useState(() => {
+    const savedUser = localStorage.getItem('user');
+    return savedUser ? JSON.parse(savedUser) : null;
+  });
+
   const [chats, setChats] = useState(() => {
     const saved = localStorage.getItem('messenger_chats');
     return saved ? JSON.parse(saved) : INITIAL_CHATS;
@@ -31,20 +39,22 @@ export default function App() {
 
   const messagesEndRef = useRef(null);
 
-  // Синхронизируем стабильный реф, чтобы убрать замыкание сокетов
   const activeChatIdRef = useRef(activeChatId);
   useEffect(() => { activeChatIdRef.current = activeChatId; }, [activeChatId]);
 
   const activeChat = chats.find(c => c.id === activeChatId);
   const filteredChats = chats.filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()));
 
-  // Главный слушатель входящих данных от сервера
+  // Главный слушатель сокетов: запускается теперь ТОЛЬКО когда user вошел в аккаунт
   useEffect(() => {
+    if (!user) return; // Если юзера нет, подключение к сокетам не создаем
+
+    socket = io('http://localhost:5001');
+
     socket.on('connect', () => console.log('✅ Подключились к бэкенду!'));
 
     socket.on('receive_message', (data) => {
       console.log('📥 Получены данные с сервера:', data);
-      
       // Автономный синтез звука (без интернета и ссылок)
       if (data.sender !== 'me') {
         try {
@@ -63,7 +73,6 @@ export default function App() {
           console.log("Звук заблокирован браузером до клика:", err);
         }
       }
-
       // Обновляем счетчик unreadCount и добавляем сообщение
       setChats(prevChats => prevChats.map(chat => {
         if (chat.id === data.chatId) {
@@ -86,9 +95,13 @@ export default function App() {
       }));
     });
 
-    return () => { socket.off('connect'); socket.off('receive_message'); };
-  }, []);
-    useEffect(() => {
+    // Очищаем сокет при выходе из аккаунта или закрытии приложения
+    return () => { 
+      if (socket) socket.disconnect(); 
+    };
+  }, [user]); // Эффект перезапустится при изменении статуса user
+
+  useEffect(() => {
     if (isDarkMode) document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
     localStorage.setItem('messenger_dark_mode', JSON.stringify(isDarkMode));
@@ -100,7 +113,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('messenger_chats', JSON.stringify(chats));
   }, [chats]);
-
   // Сброс счетчика непрочитанных при входе в чат и прочтение галочек
   useEffect(() => {
     if (!activeChatId) return;
@@ -125,7 +137,8 @@ export default function App() {
     const now = new Date();
     const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
     
-    socket.emit('send_message', { chatId: activeChatId, text: text, time: timeStr, sender: 'me' });
+    // Передаем реальное имя пользователя вместо статичного 'me'
+    socket.emit('send_message', { chatId: activeChatId, text: text, time: timeStr, sender: user?.username || 'me' });
     setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, messages: [...c.messages, { id: 'm_' + Date.now(), text, sender: 'me', time: timeStr, status: 'sent' }] } : c));
     setInputValue('');
   };
@@ -134,7 +147,7 @@ export default function App() {
     if (!activeChatId) return;
     const now = new Date();
     const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-    socket.emit('send_message', { chatId: activeChatId, text: "🖼️ Фотография", time: timeStr, sender: 'me' });
+    socket.emit('send_message', { chatId: activeChatId, text: "🖼️ Фотография", time: timeStr, sender: user?.username || 'me' });
     setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, messages: [...c.messages, { id: 'img_' + Date.now(), type: 'image', image: base64Image, sender: 'me', time: timeStr, status: 'sent' }] } : c));
   };
 
@@ -142,18 +155,31 @@ export default function App() {
     if (!activeChatId) return;
     const now = new Date();
     const timeStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-    socket.emit('send_message', { chatId: activeChatId, text: "🎙️ Голосовое сообщение", time: timeStr, sender: 'me' });
+    socket.emit('send_message', { chatId: activeChatId, text: "🎙️ Голосовое сообщение", time: timeStr, sender: user?.username || 'me' });
     setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, messages: [...c.messages, { id: 'audio_' + Date.now(), type: 'audio', audio: base64Audio, sender: 'me', time: timeStr, status: 'sent' }] } : c));
   };
 
+  // Метод для выхода из аккаунта (пригодится на будущее)
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setUser(null);
+    setActiveChatId(null);
+  };
+
+  // МАНЕВР: Если юзер не авторизован, принудительно рендерим только форму входа
+  if (!user) {
+    return <Auth onAuthSuccess={(authenticatedUser) => setUser(authenticatedUser)} />;
+  }
+
+  // Если авторизован — открывается сам мессенджер
   return (
     <div className="bg-zinc-100 dark:bg-zinc-900 text-zinc-900 dark:text-white h-screen flex justify-center items-center font-sans antialiased transition-colors duration-300">
       <div className="w-full h-full md:max-w-5xl md:h-[90vh] md:rounded-2xl md:border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 flex overflow-hidden shadow-2xl transition-colors duration-300">
-        <Sidebar chats={filteredChats} activeChatId={activeChatId} setActiveChatId={setActiveChatId} searchQuery={searchQuery} setSearchQuery={setSearchQuery} isDarkMode={isDarkMode} onToggleTheme={() => setIsDarkMode(!isDarkMode)} />
+        <Sidebar chats={filteredChats} activeChatId={activeChatId} setActiveChatId={setActiveChatId} searchQuery={searchQuery} setSearchQuery={setSearchQuery} isDarkMode={isDarkMode} onToggleTheme={() => setIsDarkMode(!isDarkMode)} onLogout={handleLogout} />
         <ChatArea activeChatId={activeChatId} activeChat={activeChat} setActiveChatId={setActiveChatId} inputValue={inputValue} setInputValue={setInputValue} handleSendMessage={handleSendMessage} messagesEndRef={messagesEndRef} isTyping={isTyping} onDeleteMessage={handleDeleteMessage} onSendImage={handleSendImage} onSendAudio={handleSendAudio} onToggleProfile={() => setIsProfileOpen(!isProfileOpen)} />
         <ProfilePanel activeChat={activeChat} isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} />
       </div>
     </div>
   );
 }
-

@@ -7,7 +7,8 @@ export default function Sidebar({
   searchQuery, 
   setSearchQuery,
   isDarkMode,
-  onToggleTheme
+  onToggleTheme,
+  onLogout
 }) {
   return (
     <div className={`w-full md:w-80 h-full border-r border-zinc-200 dark:border-zinc-800 flex flex-col bg-white dark:bg-zinc-950 transition-colors duration-300 ${activeChatId ? 'hidden md:flex' : 'flex'}`}>
@@ -96,6 +97,14 @@ export default function Sidebar({
         >
           {isDarkMode ? '☀️' : '🌙'}
         </button>
+        <button
+  onClick={onLogout}
+  className="w-full mt-2 flex items-center justify-center gap-2 rounded-xl bg-zinc-100 hover:bg-red-50 dark:bg-zinc-900 dark:hover:bg-red-950/30 px-4 py-2.5 text-sm font-medium text-zinc-600 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400 transition duration-200 cursor-pointer"
+>
+  <span>🚪</span>
+  Выйти из аккаунта
+</button>
+
       </div>
 
     </div>
