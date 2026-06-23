@@ -10,6 +10,17 @@ export default function Sidebar({
   onToggleTheme,
   onLogout
 }) {
+  // Вспомогательная функция безопасного форматирования времени Prisma (ISO -> ЧЧ:ММ)
+  const formatMsgTime = (dateString) => {
+    if (!dateString) return '';
+    try {
+      const d = new Date(dateString);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
+  };
+
   return (
     <div className={`w-full md:w-80 h-full border-r border-zinc-200 dark:border-zinc-800 flex flex-col bg-white dark:bg-zinc-950 transition-colors duration-300 ${activeChatId ? 'hidden md:flex' : 'flex'}`}>
       
@@ -30,14 +41,19 @@ export default function Sidebar({
           <span className="absolute left-3 top-2.5 text-xs text-zinc-400">🔍</span>
         </div>
       </div>
+
       {/* Список чатов */}
       <div className="flex-1 overflow-y-auto no-scrollbar px-2 space-y-1">
-        {chats.length === 0 ? (
+        {!chats || chats.length === 0 ? (
           <p className="text-xs text-zinc-400 text-center py-8">Ничего не найдено</p>
         ) : (
           chats.map(chat => {
             const isActive = chat.id === activeChatId;
-            const lastMessage = chat.messages[chat.messages.length - 1];
+            
+            // ЗАЩИТА: Добавили цепочку ?. на случай, если messages нет или массив пустой
+            const lastMessage = chat.messages && chat.messages.length > 0 
+              ? chat.messages[chat.messages.length - 1] 
+              : null;
 
             return (
               <button
@@ -50,25 +66,29 @@ export default function Sidebar({
                 }`}
               >
                 <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm">
-                  {chat.avatar}
+                  {chat.avatar || '👤'}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-baseline mb-0.5">
                     <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">{chat.name}</h3>
                     {lastMessage && (
-                      <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">{lastMessage.time}</span>
+                      <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
+                        {formatMsgTime(lastMessage.createdAt)}
+                      </span>
                     )}
                   </div>
                   
-                  {/* Контейнер для последнего сообщения и ЗЕЛЁНОГО КРУЖКА */}
+                  {/* Контейнер для последнего сообщения и СЧЕТЧИКА */}
                   <div className="flex justify-between items-center gap-2">
                     <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
                       {lastMessage 
                         ? lastMessage.isDeleted 
                           ? '🚫 Сообщение удалено' 
-                          : lastMessage.type === 'image' 
+                          : lastMessage.mediaType === 'image' 
                             ? '🖼️ Фотография' 
-                            : lastMessage.text 
+                            : lastMessage.mediaType === 'audio'
+                              ? '🎙️ Голосовое сообщение'
+                              : lastMessage.text 
                         : 'Нет сообщений'}
                     </p>
                     
@@ -86,25 +106,26 @@ export default function Sidebar({
           })
         )}
       </div>
-
-      {/* Подвал сайдбара с кнопкой темы */}
-      <div className="p-3 border-t border-zinc-100 dark:border-zinc-900 flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-950/20">
-        <span className="text-[11px] text-zinc-400 font-medium">Mini Messenger v1.3</span>
+      {/* Подвал сайдбара с кнопками темы и выхода */}
+      <div className="p-3 border-t border-zinc-100 dark:border-zinc-900 flex flex-col gap-2 bg-zinc-50/50 dark:bg-zinc-950/20">
+        <div className="flex justify-between items-center">
+          <span className="text-[11px] text-zinc-400 font-medium">Mini Messenger v1.3</span>
+          <button
+            onClick={onToggleTheme}
+            className="p-2 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-amber-500 rounded-xl transition active:scale-95 text-sm shadow-sm"
+            title={isDarkMode ? "Включить светлую тему" : "Включить темную тему"}
+          >
+            {isDarkMode ? '☀️' : '🌙'}
+          </button>
+        </div>
+        
         <button
-          onClick={onToggleTheme}
-          className="p-2 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-amber-500 rounded-xl transition active:scale-95 text-sm shadow-sm"
-          title={isDarkMode ? "Включить светлую тему" : "Включить темную тему"}
+          onClick={onLogout}
+          className="w-full flex items-center justify-center gap-2 rounded-xl bg-zinc-100 hover:bg-red-50 dark:bg-zinc-900 dark:hover:bg-red-950/30 px-4 py-2.5 text-sm font-medium text-zinc-600 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400 transition duration-200 cursor-pointer"
         >
-          {isDarkMode ? '☀️' : '🌙'}
+          <span>🚪</span>
+          Выйти из аккаунта
         </button>
-        <button
-  onClick={onLogout}
-  className="w-full mt-2 flex items-center justify-center gap-2 rounded-xl bg-zinc-100 hover:bg-red-50 dark:bg-zinc-900 dark:hover:bg-red-950/30 px-4 py-2.5 text-sm font-medium text-zinc-600 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400 transition duration-200 cursor-pointer"
->
-  <span>🚪</span>
-  Выйти из аккаунта
-</button>
-
       </div>
 
     </div>
