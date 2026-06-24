@@ -13,6 +13,8 @@ export default function ChatArea({
   onSendImage,
   onToggleProfile,
   onSendAudio,
+  activeChatData,
+  messages,
   currentUserId,// ID текущего юзера для проверки (isMe)
   socketRef,
   typingUser 
@@ -25,12 +27,120 @@ export default function ChatArea({
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
+  // --- Смарт-скролл и позиционирование ---
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [isPositioning, setIsPositioning] = useState(false); // Anti-Flicker барьер
+  const [unreadCountWhileReading, setUnreadCountWhileReading] = useState(0); // Счетчик для кнопки "Вниз"
+  const isUserScrolledUp = useRef(false); // Блокировка автоскролла без лишних ререндеров
+  
+  const scrollContainerRef = useRef(null); // Реф на контейнер со скроллом
+  const firstUnreadRef = useRef(null);     // Реф на первое непрочитанное
 
+  // Закрытие меню
   useEffect(() => {
     const handleCloseMenu = () => setContextMenu({ visible: false, x: 0, y: 0, msgId: null });
     window.addEventListener('click', handleCloseMenu);
     return () => window.removeEventListener('click', handleCloseMenu);
   }, []);
+
+    // Ищем первое непрочитанное сообщение от собеседника (исправлено msg -> m)
+  const firstUnreadMsg = (messages || []).find(
+    m => m && 
+         m.senderId !== undefined && 
+         String(m.senderId) !== String(currentUserId) && 
+         m.isDeleted !== true &&
+         m.status !== 'read'
+  );
+
+
+  // 🏁 ЭФФЕКТ А. Стартовое позиционирование при смене чата
+  useEffect(() => {
+    if (!messages || messages.length === 0) {
+      console.log("⚠️ Смарт-скролл: Массив сообщений пуст или не передан");
+      return;
+    }
+
+    console.log("🔍 Проверка при смене чата:", {
+      'Всего сообщений': messages.length,
+      'Найдено непрочитанное собеседника': firstUnreadMsg ? `Да, ID: ${firstUnreadMsg.id}` : 'Нет',
+      'ID текущего юзера': currentUserId,
+      'Последнее сообщение от': messages[messages.length - 1]?.senderId
+    });
+
+    setIsPositioning(true);
+    isUserScrolledUp.current = false;
+    setShowScrollBtn(false);
+    setUnreadCountWhileReading(0);
+
+       const timer = setTimeout(() => {
+      if (firstUnreadMsg && firstUnreadRef.current) {
+        console.log("🎯 Смарт-скролл: Выполняю прыжок к МАРКЕРУ");
+        firstUnreadRef.current.scrollIntoView({ behavior: 'auto', block: 'center' });
+      } else if (messagesEndRef.current) {
+        console.log("🔽 Смарт-скролл: Непрочитанных нет, прыгаю В САМЫЙ НИЗ");
+        messagesEndRef.current.scrollIntoView({ behavior: 'auto' }); // 👈 РАСКОММЕНТИРОВАЛИ!
+      }
+      setIsPositioning(false);
+    }, 15);
+ // Немного увеличили задержку до 80мс для стабильности рендеринга DOM
+
+    return () => clearTimeout(timer);
+  }, [activeChatId]);
+
+  // 📜 ЭФФЕКТ Б. Обработка новых сообщений (Умный автоскролл)
+  useEffect(() => {
+    // ЗАЩИТА: Если чат прямо сейчас только загружается и позиционируется — блокируем этот эффект!
+    if (isPositioning || !messages || messages.length === 0) return;
+
+    const lastMsg = messages[messages.length - 1];
+    const isLastMsgMe = Number(lastMsg?.senderId) === Number(currentUserId);
+
+    if (isLastMsgMe) {
+      isUserScrolledUp.current = false;
+      setShowScrollBtn(false);
+      setUnreadCountWhileReading(0);
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 50);
+    } else {
+      if (isUserScrolledUp.current) {
+        setUnreadCountWhileReading(prev => prev + 1);
+      } else {
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 50);
+      }
+    }
+  }, [messages, isPositioning]); // 👈 Добавили dependency isPositioning
+
+
+  // 🎛️ Обработчик прокрутки ленты
+  const handleScroll = () => {
+    if (!scrollContainerRef.current) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+
+    if (distanceFromBottom > 200) {
+      isUserScrolledUp.current = true;
+      setShowScrollBtn(true);
+    } else {
+      isUserScrolledUp.current = false;
+      setShowScrollBtn(false);
+      setUnreadCountWhileReading(0);
+    }
+  };
+
+  // Плавный скролл вниз по клику на кнопку
+  const scrollToBottomSmooth = () => {
+    isUserScrolledUp.current = false;
+    setShowScrollBtn(false);
+    setUnreadCountWhileReading(0);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+
+  /*----------------------------------------------------------------------------------------*-*/
 
   useEffect(() => {
     if (isRecording) {
@@ -53,40 +163,108 @@ export default function ChatArea({
     if (text) navigator.clipboard.writeText(text);
   };
 
-  // Исправлено: возвращаем, чтобы правильно читать файл
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
+       const handleFileChange = async (e) => {
+    const file = e.target.files[0]; // Исправлено: берем первый файл из массива
     if (!file) return;
+
     if (!file.type.startsWith('image/')) {
       alert('Пожалуйста, выберите изображение');
       return;
     }
-    const reader = new FileReader();
-    reader.onloadend = () => onSendImage(reader.result);
-    reader.readAsDataURL(file);
-    e.target.value = '';
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('http://localhost:5001/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Ошибка при загрузке файла');
+      
+      const data = await response.json();
+      console.log('📦 Ответ сервера на загрузку картинки:', data);
+      
+      // Бэкенд возвращает fileUrl! Берем его напрямую
+      const finalUrl = data.fileUrl;
+
+      if (!finalUrl) {
+        throw new Error('Бэкенд не вернул fileUrl');
+      }
+      
+      // Отправляем ОДИН раз через проп
+      if (typeof onSendImage === 'function') {
+        onSendImage(finalUrl); 
+      }
+
+    } catch (error) {
+      console.error('Ошибка загрузки медиа через Multer:', error);
+      alert('Не удалось отправить изображение');
+    }
+
+    e.target.value = ''; // Сбрасываем инпут
   };
-  const startRecording = async () => {
+
+
+
+
+    const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
+      
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) audioChunksRef.current.push(event.data);
       };
-      mediaRecorderRef.current.onstop = () => {
+
+      mediaRecorderRef.current.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const reader = new FileReader();
-        reader.onloadend = () => onSendAudio(reader.result);
-        reader.readAsDataURL(audioBlob);
+        
+        //  Переводим Blob в файл для Multer
+        const audioFile = new File([audioBlob], 'voice.webm', { type: 'audio/webm' });
+        const formData = new FormData();
+        formData.append('file', audioFile);
+
+                try {
+          const response = await fetch('http://localhost:5001/api/upload', {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (!response.ok) throw new Error('Ошибка при загрузке аудио');
+          
+          // Делаем имя переменной уникальным для этой функции, используя const
+          const audioResponseData = await response.json();
+          console.log('📦 Ответ сервера на загрузку аудио:', audioResponseData);
+        
+          // Бэкенд возвращает fileUrl
+          const finalAudioUrl = audioResponseData.fileUrl;
+
+          if (!finalAudioUrl) {
+            throw new Error('Бэкенд не вернул fileUrl для аудио');
+          }
+
+          if (typeof onSendAudio === 'function') {
+            onSendAudio(finalAudioUrl);
+          }
+        } catch (uploadError) {
+          console.error('Ошибка сохранения аудио на сервере:', uploadError);
+          alert('Не удалось отправить голосовое сообщение');
+        }
+
+        // Выключаем микрофон, чтобы иконка записи в браузере погасла
         stream.getTracks().forEach(track => track.stop());
       };
+
       mediaRecorderRef.current.start();
       setIsRecording(true);
     } catch (err) {
       alert('Микрофон недоступен: ' + err.message);
     }
   };
+
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
@@ -100,7 +278,20 @@ export default function ChatArea({
     const remainingSecs = secs % 60;
     return `${mins}:${remainingSecs.toString().padStart(2, '0')}`;
   };
+  // Безопасное каскадное получение данных: сначала из нового activeChatData, затем из старого activeChat
+  const chatName = activeChatData?.name || activeChat?.name || (activeChatId === 'chat_general' ? 'Общий чат' : 'Загрузка...');
+  const chatAvatar = activeChatData?.avatar || activeChat?.avatar || (activeChatId === 'chat_general' ? '💬' : '👤');
+  const isDataLoading = !activeChatData && !activeChat && activeChatId !== 'chat_general';
 
+
+    // Вычисляем статус печатания для текущего активного окна на основе веб-сокетов
+  const isCurrentChatTyping = typingUser && (
+    (typingUser.isGeneral && activeChatId === 'chat_general' && Number(typingUser.senderId) !== Number(currentUserId)) ||
+    (!typingUser.isGeneral && activeChatId?.toString().replace('user_', '') === typingUser.senderId?.toString())
+  );
+
+
+  // 2. Функция форматирования времени сообщений
   const formatMsgTime = (dateString) => {
     if (!dateString) return '';
     try {
@@ -110,6 +301,7 @@ export default function ChatArea({
       return '';
     }
   };
+
 
   return (
     <div className={`flex-col flex-1 h-full bg-zinc-900/30 ${activeChatId ? 'flex' : 'hidden md:flex'}`}>
@@ -127,69 +319,127 @@ export default function ChatArea({
               <button onClick={(e) => { e.stopPropagation(); setActiveChatId(null); }} className="md:hidden mr-3 p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition">
                 <span className="text-xl">🔙</span>
               </button>
+              
+              {/* Аватарка с защитой от залипания */}
               <div className="w-10 h-10 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-lg mr-3 shadow-inner group-hover:scale-105 transition-transform duration-200">
-                {activeChat.avatar || '👤'}
+                {chatAvatar}
               </div>
-              <div>
-                <h2 className="font-semibold text-sm text-zinc-800 dark:text-white group-hover:text-emerald-500 transition-colors">{activeChat.name}</h2>
+              
+               <div>
+                {/* Имя чата / собеседника */}
+                <h2 className={`font-semibold text-sm transition-colors ${isDataLoading ? 'text-zinc-500 italic' : 'text-zinc-800 dark:text-white group-hover:text-emerald-500'}`}>
+                  {chatName}
+                </h2>
+                
+                {/* Статус */}
                 <span className="text-xs transition-colors duration-300">
-                  {isTyping ? <span className="text-emerald-500 dark:text-emerald-400 animate-pulse">печатает...</span> : <span className="text-zinc-400 dark:text-zinc-500">онлайн</span>}
+                  {isDataLoading ? (
+                    <span className="text-zinc-500 dark:text-zinc-600 animate-pulse">поиск в базе...</span>
+                  ) : isCurrentChatTyping ? ( // 🔥 Заменили на исправленную переменную сокетов
+                    <span className="text-emerald-500 dark:text-emerald-400 animate-pulse">печатает...</span>
+                  ) : (
+                    <span className="text-zinc-400 dark:text-zinc-500">
+                      {activeChatData?.type === 'channel' || activeChatId === 'chat_general' ? 'канал' : 'онлайн'}
+                    </span>
+                  )}
                 </span>
               </div>
             </div>
-            <button onClick={onToggleProfile} className="p-2 text-zinc-400 dark:text-zinc-500 hover:text-zinc-800 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition">
+            <button onClick={onToggleProfile} disabled={isDataLoading} className="p-2 text-zinc-400 dark:text-zinc-500 hover:text-zinc-800 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition disabled:opacity-30">
               ℹ️
             </button>
-          </div>
-
-          {/* Лента сообщений */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar bg-zinc-950/20">
-            {activeChat.messages && activeChat.messages.map(msg => {
+                  </div>
+                    {/* Лента сообщений с Anti-Flicker барьером и отслеживанием скролла */}
+          <div 
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+            className={`flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar bg-zinc-950/20 transition-opacity duration-200 ${isPositioning ? 'opacity-0' : 'opacity-100'}`}
+          >
+            {(messages || []).map(msg => {
               const isMe = Number(msg.senderId) === Number(currentUserId);
               const formattedTime = formatMsgTime(msg.createdAt);
+              const isTargetUnread = firstUnreadMsg && msg.id === firstUnreadMsg.id;
 
               return (
-                <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`} onContextMenu={(e) => handleContextMenu(e, msg.id)}>
-                  <div className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm shadow-sm flex flex-col gap-0.5 relative group ${
-                    msg.isDeleted 
-                      ? 'bg-zinc-200/50 dark:bg-zinc-800/30 text-zinc-400 dark:text-zinc-500 italic border border-zinc-300/50 dark:border-zinc-800/50' 
-                      : isMe ? 'bg-emerald-600 text-white rounded-br-none' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-none'
-                  } ${msg.mediaType === 'image' && !msg.isDeleted ? 'p-1 bg-zinc-100 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800' : ''} ${msg.mediaType === 'audio' && !msg.isDeleted ? 'w-64 p-3' : ''}`}>
-                    
-                    {msg.isDeleted ? (
-                      <p className="leading-relaxed text-xs">Сообщение удалено</p>
-                    ) : msg.mediaType === 'image' ? (
-                      <div className="flex flex-col gap-1">
-                        <img src={msg.mediaUrl} alt="Изображение" className="rounded-xl max-h-60 object-contain bg-zinc-950/20" />
-                        <div className="flex items-center justify-end gap-1 px-1.5 pb-0.5">
-                          <span className="text-[9px] text-zinc-400">{formattedTime}</span>
-                          {isMe && <span className="text-[10px] leading-none select-none">{msg.status === 'read' ? <span className="text-sky-300 font-bold">✓✓</span> : <span className="text-white/40">✓</span>}</span>}
+                <React.Fragment key={msg.id}>
+                  {/* JSX-Разделитель «Smart Anchor» перед первым непрочитанным */}
+                  {isTargetUnread && (
+                    <div ref={firstUnreadRef} className="w-full flex items-center justify-center my-4 select-none">
+                      <div className="h-[1px] bg-red-500/30 flex-1"></div>
+                      <span className="bg-red-500/10 text-red-500 text-[11px] font-semibold px-3 py-1 rounded-full border border-red-500/20 mx-3 animate-pulse">
+                        ⛔ Непрочитанные сообщения
+                      </span>
+                      <div className="h-[1px] bg-red-500/30 flex-1"></div>
+                    </div>
+                  )}
+
+                  <div className={`flex ${isMe ? 'justify-end' : 'justify-start'}`} onContextMenu={(e) => handleContextMenu(e, msg.id)}>
+                    <div className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm shadow-sm flex flex-col gap-0.5 relative group ${
+                      msg.isDeleted 
+                        ? 'bg-zinc-200/50 dark:bg-zinc-800/30 text-zinc-400 dark:text-zinc-500 italic border border-zinc-300/50 dark:border-zinc-800/50' 
+                        : isMe ? 'bg-emerald-600 text-white rounded-br-none' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-none'
+                    } ${msg.mediaType === 'image' && !msg.isDeleted ? 'p-1 bg-zinc-100 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800' : ''} ${msg.mediaType === 'audio' && !msg.isDeleted ? 'w-64 p-3' : ''}`}>
+                      
+                     {msg.isDeleted ? (
+                        <p className="leading-relaxed text-xs">Сообщение удалено</p>
+                     ) : msg.mediaType === 'image' && msg.mediaUrl ? (
+                        <div className="flex flex-col gap-1">
+                          <img src={msg.mediaUrl} alt="Изображение" className="rounded-xl max-h-60 object-contain bg-zinc-950/20" />
+                          <div className="flex items-center justify-end gap-1 px-1.5 pb-0.5">
+                            <span className="text-[9px] text-zinc-400">{formattedTime}</span>
+                            {isMe && (
+                              <span className="text-[10px] leading-none select-none">
+                                {msg.status === 'read' || activeChatId === 'chat_general' || activeChatId?.startsWith('channel_') ? (
+                                  <span className="text-sky-300 font-bold">✓✓</span>
+                                ) : (
+                                  <span className="text-white/40">✓</span>
+                                )}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ) : msg.mediaType === 'audio' ? (
-                      <div className="flex flex-col gap-1.5 w-full">
-                        <div className="flex items-center gap-2">
-                          <span className="text-base select-none">🎙️</span>
-                          <audio src={msg.mediaUrl} controls className="w-full h-8 custom-audio-player filter dark:invert" />
+                     ) : msg.mediaType === 'audio' && msg.mediaUrl ? (
+                        <div className="flex flex-col gap-1.5 w-full">
+                          <div className="flex items-center gap-2">
+                            <span className="text-base select-none">🎙️</span>
+                            <audio src={msg.mediaUrl} controls className="w-full h-8 custom-audio-player filter dark:invert" />
+                          </div>
+                          <div className="flex items-center justify-end gap-1 self-end">
+                            <span className={`text-[9px] ${isMe ? 'text-white/60' : 'text-zinc-400 dark:text-zinc-500'}`}>{formattedTime}</span>
+                            {isMe && (
+                              <span className="text-[10px] leading-none select-none">
+                                {msg.status === 'read' || activeChatId === 'chat_general' || activeChatId?.startsWith('channel_') ? (
+                                  <span className="text-sky-300 font-bold">✓✓</span>
+                                ) : (
+                                  <span className="text-white/40">✓</span>
+                                )}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div className="flex items-center justify-end gap-1 self-end">
-                          <span className={`text-[9px] ${isMe ? 'text-white/60' : 'text-zinc-400 dark:text-zinc-500'}`}>{formattedTime}</span>
-                          {isMe && <span className="text-[10px] leading-none select-none">{msg.status === 'read' ? <span className="text-sky-300 font-bold">✓✓</span> : <span className="text-white/40">✓</span>}</span>}
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <p className="leading-relaxed break-words">{msg.text}</p>
-                        <div className="flex items-center justify-end gap-1 self-end">
-                          <span className={`text-[9px] ${isMe ? 'text-white/60' : 'text-zinc-400 dark:text-zinc-500'}`}>{formattedTime}</span>
-                          {isMe && <span className="text-[10px] leading-none select-none">{msg.status === 'read' ? <span className="text-sky-300 font-bold">✓✓</span> : <span className="text-white/40">✓</span>}</span>}
-                        </div>
-                      </>
-                    )}
+                     ) : (
+                        <>
+                          <p className="leading-relaxed break-words">{msg.text || msg.content}</p>
+                          <div className="flex items-center justify-end gap-1 self-end">
+                            <span className={`text-[9px] ${isMe ? 'text-white/60' : 'text-zinc-400 dark:text-zinc-500'}`}>{formattedTime}</span>
+                            {isMe && (
+                              <span className="text-[10px] leading-none select-none">
+                                {msg.status === 'read' || activeChatId === 'chat_general' || activeChatId?.startsWith('channel_') ? (
+                                  <span className="text-sky-300 font-bold">✓✓</span>
+                                ) : (
+                                  <span className="text-white/40">✓</span>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        </>
+                     )}
+                    </div>
                   </div>
-                </div>
+                </React.Fragment>
               );
             })}
+            
             {isTyping && (
               <div className="flex justify-start mb-2">
                 <div className="bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-2xl rounded-bl-none px-4 py-2.5 shadow-sm flex items-center gap-1">
@@ -202,74 +452,94 @@ export default function ChatArea({
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Панель ввода */}
-          <form onSubmit={handleSendMessage} className="p-4 bg-zinc-50 dark:bg-zinc-950/40 border-t border-zinc-200 dark:border-zinc-800 flex gap-2 items-center">
-            <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
-            {!isRecording && (
-              <button type="button" onClick={() => fileInputRef.current.click()} className="p-2 text-zinc-400 hover:text-emerald-500 rounded-xl transition active:scale-95">📎</button>
-            )}
+          {/* Плавающая Telegram-кнопка «Вниз» с локальным счетчиком */}
+          {showScrollBtn && (
+            <button 
+              type="button"
+              onClick={scrollToBottomSmooth}
+              className="absolute bottom-24 right-6 w-10 h-10 bg-zinc-800 dark:bg-zinc-700 hover:bg-emerald-600 dark:hover:bg-emerald-600 text-white rounded-full flex items-center justify-center shadow-lg transition-all duration-300 active:scale-95 group z-40"
+            >
+              <span className="text-sm font-bold group-hover:translate-y-0.5 transition-transform duration-200">↓</span>
+              {unreadCountWhileReading > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 bg-emerald-500 text-white text-[10px] font-bold h-5 w-5 rounded-full flex items-center justify-center border border-zinc-900">
+                  {unreadCountWhileReading}
+                </span>
+              )}
+            </button>
+          )}
 
-          {isRecording ? (
-              <div className="flex-1 bg-red-500/10 border border-red-500/20 text-red-500 rounded-xl px-4 py-2.5 text-sm flex items-center justify-between font-medium animate-pulse">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 bg-red-500 rounded-full"></span>
-                  <span>Запись голосового сообщения...</span>
+         {/* Панель ввода с динамической проверкой прав администратора */}
+          {activeChatId && activeChatId.startsWith('channel_') && 
+           (activeChatData?.creatorId !== Number(currentUserId) && activeChat?.creatorId !== Number(currentUserId)) ? (
+            /* Глухая, красивая плашка во всю ширину для обычных подписчиков канала */
+            <div className="p-5 bg-zinc-100 dark:bg-zinc-950/60 border-t border-zinc-200 dark:border-zinc-800 text-center text-sm font-medium tracking-wide text-zinc-400 dark:text-zinc-500 rounded-b-xl flex items-center justify-center gap-2 select-none">
+              📢 Только администраторы могут оставлять сообщения
+            </div>
+          ) : (
+            <form onSubmit={handleSendMessage} className="p-4 bg-zinc-50 dark:bg-zinc-950/40 border-t border-zinc-200 dark:border-zinc-800 flex gap-2 items-center">
+              <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
+              {!isRecording && (
+                <button type="button" onClick={() => fileInputRef.current.click()} className="p-2 text-zinc-400 hover:text-emerald-500 rounded-xl transition active:scale-95">📎</button>
+              )}
+
+              {isRecording ? (
+                <div className="flex-1 bg-red-500/10 border border-red-500/20 text-red-500 rounded-xl px-4 py-2.5 text-sm flex items-center justify-between font-medium animate-pulse">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                    <span>Запись голосового сообщения...</span>
+                  </div>
+                  <span>{formatTime(recordingTime)}</span>
                 </div>
-                <span>{formatTime(recordingTime)}</span>
+              ) : (
+                <input 
+                  type="text" 
+                  value={inputValue} 
+                  onChange={(e) => {
+                    setInputValue(e.target.value);
+                    if (socketRef && socketRef.current) {
+                      socketRef.current.emit('typing', { activeChatId, senderId: currentUserId });
+                    }
+                  }} 
+                  placeholder="Напишите сообщение..." 
+                  autoComplete="off" 
+                  className="flex-1 bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200/60 dark:border-zinc-700/50 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 transition text-zinc-800 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-500" 
+                />
+              )}
+
+              {inputValue.trim() === '' ? (
+                <button type="button" onClick={isRecording ? stopRecording : startRecording} className={`p-2.5 rounded-xl text-sm font-medium transition active:scale-95 shadow-md flex items-center justify-center ${isRecording ? 'bg-red-600 text-white hover:bg-red-500' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-emerald-500 dark:hover:text-emerald-400'}`}>
+                  {isRecording ? '⏹️' : '🎙️'}
+                </button>
+              ) : (
+                <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition active:scale-95 shadow-md shadow-emerald-900/20">Отправить</button>
+              )}
+            </form>
+          )}
+
+          {/* Индикатор печатания с прыгающими точками */}
+          {typingUser && (
+            ((typingUser.isGeneral && activeChatId === 'chat_general' && Number(typingUser.id) !== Number(currentUserId)) ||
+            (!typingUser.isGeneral && activeChatId === `user_${typingUser.id}`))
+          ) && (
+            <div className="px-4 py-2 text-xs text-zinc-400 italic flex items-center gap-1.5 animate-pulse">
+              <span>Собеседник печатает</span>
+              <div className="flex gap-1">
+                <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce"></span>
+                <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.2s]"></span>
+                <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.4s]"></span>
               </div>
-            ) : (
-              // === ИСПРАВЛЕНО: Добавлен сокет для отправки статуса "печатает..." ===
-              <input 
-                type="text" 
-                value={inputValue} 
-                onChange={(e) => {
-                  setInputValue(e.target.value);
-                  if (socketRef && socketRef.current) {
-                    socketRef.current.emit('typing', { activeChatId, senderId: currentUserId });
-                  }
-                }} 
-                placeholder="Напишите сообщение..." 
-                autoComplete="off" 
-                className="flex-1 bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200/60 dark:border-zinc-700/50 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 transition text-zinc-800 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-500" 
-              />
-            )}
-       {/* Индикатор печатания */}
-{typingUser && (
-  // Если это общий чат — показываем точки, только если печатает НЕ текущий юзер
-  // Если это личка — показываем точки, только если ID печатающего совпадает с ID открытого чата
-  (typingUser.isGeneral && activeChatId === 'chat_general' && Number(typingUser.id) !== Number(currentUserId)) ||
-  (!typingUser.isGeneral && activeChatId === `user_${typingUser.id}`)
-) && (
-  <div className="px-4 py-2 text-xs text-zinc-400 italic flex items-center gap-1.5 animate-pulse">
-    <span>Собеседник печатает</span>
-    <div className="flex gap-1">
-      <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce"></span>
-      <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.2s]"></span>
-      <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.4s]"></span>
-    </div>
-  </div>
-)}
+            </div>
+          )}
 
-
-
-            {inputValue.trim() === '' ? (
-              <button type="button" onClick={isRecording ? stopRecording : startRecording} className={`p-2.5 rounded-xl text-sm font-medium transition active:scale-95 shadow-md flex items-center justify-center ${isRecording ? 'bg-red-600 text-white hover:bg-red-500' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:text-emerald-500 dark:hover:text-emerald-400'}`}>
-                {isRecording ? '⏹️' : '🎙️'}
-              </button>
-            ) : (
-              <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition active:scale-95 shadow-md shadow-emerald-900/20">Отправить</button>
-            )}
-          </form>
-
-          {/* Контекстное меню */}
+          {/* Исправленное контекстное меню без обращений к activeChat.messages */}
           {contextMenu.visible && (
             <div className="fixed bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700/80 py-1 w-36 rounded-xl shadow-2xl z-50 text-xs text-zinc-700 dark:text-zinc-200 overflow-hidden" style={{ top: contextMenu.y, left: contextMenu.x }}>
-              {activeChat.messages && !activeChat.messages.find(m => m.id === contextMenu.msgId)?.isDeleted && 
-               activeChat.messages.find(m => m.id === contextMenu.msgId)?.mediaType !== 'image' && 
-               activeChat.messages.find(m => m.id === contextMenu.msgId)?.mediaType !== 'audio' && (
-                <button onClick={() => handleCopy(activeChat.messages.find(m => m.id === contextMenu.msgId)?.text)} className="w-full text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-2">📋 Копировать</button>
+              {messages && !messages.find(m => m.id === contextMenu.msgId)?.isDeleted && 
+               messages.find(m => m.id === contextMenu.msgId)?.mediaType !== 'image' && 
+               messages.find(m => m.id === contextMenu.msgId)?.mediaType !== 'audio' && (
+                <button onClick={() => handleCopy(messages.find(m => m.id === contextMenu.msgId)?.text)} className="w-full text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-2">📋 Копировать</button>
               )}
-              <button onClick={() => {onDeleteMessage(contextMenu.msgId); setContextMenu({ visible:false, x:0, y:0,msgId:null})}} className="w-full text-left px-3 py-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 dark:text-red-400 transition flex items-center gap-2 font-medium border-t border-zinc-100 dark:border-zinc-700/30">🗑️ Удалить у всех</button>
+              <button onClick={() => { onDeleteMessage(contextMenu.msgId); setContextMenu({ visible: false, x: 0, y: 0, msgId: null }); }} className="w-full text-left px-3 py-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 dark:text-red-400 transition flex items-center gap-2 font-medium border-t border-zinc-100 dark:border-zinc-700/30">🗑️ Удалить у всех</button>
             </div>
           )}
 

@@ -27,7 +27,9 @@ export default function App() {
 
   const [activeChatId, setActiveChatId] = useState("chat_general");
   const activeChatIdRef = useRef(activeChatId);
-   const socketRef = useRef(null); 
+  const socketRef = useRef(null); 
+  const [channels, setChannels] = useState([]);
+  const [activeChatData, setActiveChatData] = useState(null);
 
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
@@ -39,67 +41,164 @@ export default function App() {
 
   const messagesEndRef = useRef(null);
 
-  // 1. ЭФФЕКТ: Загрузка всей истории сообщений из PostgreSQL при входе
+    // =========================================================================
+  // 📜 ЕДИНЫЙ КАСКАДНЫЙ ЭФФЕКТ: Последовательная загрузка для защиты пула БД (max: 2)
+  // =========================================================================
   useEffect(() => {
     if (!user) return;
 
-    const fetchChatHistory = async () => {
+    const initializeAppData = async () => {
       try {
-        const response = await fetch('http://localhost:5001/api/messages');
-        if (!response.ok) throw new Error('Ошибка при загрузке истории чата');
-        const data = await response.json();
-        setMessages(data); 
-      } catch (error) {
-        console.error('Не удалось загрузить историю:', error);
+        console.log('🔄 Старт каскадной инициализации данных...');
+
+        // --- 1. ШАГ: Загрузка пользователей ---
+        try {
+          const resUsers = await fetch('http://localhost:5001/api/users', {
+            headers: { 'x-current-user-id': user.id }
+          });
+          if (!resUsers.ok) throw new Error('Ошибка при загрузке пользователей');
+          const databaseUsers = await resUsers.json();
+          setChats([
+            { id: "chat_general", name: "Общий чат (PostgreSQL)", avatar: "💬", unreadCount: 0 },
+            ...databaseUsers
+          ]);
+          console.log('✅ Контакты успешно загружены');
+        } catch (err) {
+          console.error('Не удалось загрузить список контактов:', err);
+        }
+
+        // Микропауза 250мс для освобождения слота в pg.Pool
+        await new Promise(res => setTimeout(res, 250));
+
+        // --- 2. ШАГ: Загрузка каналов ---
+        try {
+          const resChannels = await fetch('http://localhost:5001/api/channels');
+          if (!resChannels.ok) throw new Error('Ошибка при загрузке каналов');
+          const channelsData = await resChannels.json();
+          console.log('📢 Загруженные каналы с бэкенда:', channelsData);
+          setChannels(channelsData);
+        } catch (err) {
+          console.error('Не удалось загрузить список каналов:', err);
+        }
+
+        // Микропауза 250мс для освобождения слота в pg.Pool
+        await new Promise(res => setTimeout(res, 250));
+
+                // --- 3. ШАГ: Загрузка истории сообщений ---
+        try {
+          const resMessages = await fetch('http://localhost:5001/api/messages');
+          if (!resMessages.ok) throw new Error('Ошибка при загрузке истории чата');
+          const messagesData = await resMessages.json();
+          setMessages(messagesData);
+          console.log('✅ История сообщений успешно загружены');
+        } catch (err) {
+          console.error('Не удалось загрузить историю:', err);
+        }
+
+        console.log('🚀 Каскадная загрузка данных успешно завершена!');
+
+      } catch (globalError) {
+        console.error('Критический сбой инициализации приложения:', globalError);
       }
     };
 
-    fetchChatHistory();
+    initializeAppData();
   }, [user]);
 
-  // 1.Б ЭФФЕКТ: Загрузка списка зарегистрированных пользователей (контактов) из базы
-  useEffect(() => {
-    if (!user) return;
 
-    const fetchUsers = async () => {
-      try {
-        const response = await fetch('http://localhost:5001/api/users', {
-          headers: { 'x-current-user-id': user.id }
-        });
-        if (!response.ok) throw new Error('Ошибка при загрузке пользователей');
-        const databaseUsers = await response.json();
-
-        setChats([
-          { id: "chat_general", name: "Общий чат (PostgreSQL)", avatar: "💬", unreadCount: 0 },
-          ...databaseUsers
-        ]);
-      } catch (error) {
-        console.error('Не удалось загрузить список контактов:', error);
+  // =========================================================================
+  // 📢 СОЗДАНИЕ КАНАЛА (ОБРАБОТЧИК ФОРМЫ С САЙДБАРА)
+  // =========================================================================
+  const handleCreateChannel = async (channelData) => {
+    try {
+      const savedUser = localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')) : null;
+      const creatorId = savedUser?.id || savedUser?._id; 
+      
+      if (!creatorId) {
+        alert("Ошибка: Пользователь не авторизован или ID не найден");
+        return;
       }
-    };
 
-    fetchUsers();
-  }, [user]);
+      const response = await fetch('http://localhost:5001/api/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: channelData.name,
+          avatar: channelData.avatar,
+          creatorId: creatorId
+        }),
+      });
 
-  // 2. ЭФФЕКТ: Инициализация Socket.io
+      if (!response.ok) throw new Error('Ошибка при отправке запроса на создание канала');
+      
+      const newChannel = await response.json();
+      setChannels(prev => [...prev, newChannel]);
+
+    } catch (error) {
+      console.error('Ошибка создания канала на фронтенде:', error);
+      alert('Не удалось создать канал. Попробуйте еще раз.');
+    }
+  };
+
+    
+
+  // =========================================================================
+  // 🔌 ИНИЦИАЛИЗАЦИЯ SOCKET.IO СО ВСЕМИ СЛУШАТЕЛЯМИ
+  // =========================================================================
   useEffect(() => {
     if (!user) return; 
 
-    socketRef.current = io('http://localhost:5001');
+    // Создаем подключение, только если его еще нет
+    if (!socketRef.current) {
+      socketRef.current = io('http://localhost:5001');
+    }
 
-    socketRef.current.on('connect', () => {
+    const socket = socketRef.current;
+
+    socket.on('connect', () => {
       console.log('✅ Подключились к бэкенду!');
-      // Всегда подписываемся на свой личный "почтовый ящик" по ID юзера
-      socketRef.current.emit('join_chat', `user_${user.id}`);
-      // И также подписываемся на текущий активный чат в интерфейсе
-      socketRef.current.emit('join_chat', activeChatId);
+      socket.emit('join_chat', `user_${user.id}`);
+      socket.emit('join_chat', activeChatId);
     });
 
-    socketRef.current.on('receive_message', (newMessage) => {
+    // Очищаем старые слушатели перед навешиванием новых для защиты от дублирования
+    socket.off('receive_message');
+    socket.off('message_deleted');
+    socket.off('typing');
+    socket.off('channel_created');
+
+    // === 1. СЛУШАТЕЛЬ НОВЫХ СООБЩЕНИЙ ===
+    socket.on('receive_message', (newMessage) => {
       console.log('📥 Получено новое сообщение:', newMessage);
 
-      // Звуковое уведомление
-      if (newMessage.senderId !== user.id) {
+      // Железная защита от дублирования сообщений по ID
+      setMessages((prev) => {
+        if (prev.some((msg) => msg.id === newMessage.id)) return prev; 
+        return [...prev, newMessage];
+      });
+
+      // Логика счетчиков непрочитанных сообщений (зеленые кружочки)
+      const currentUserId = Number(user?.id);
+      const msgSenderId = Number(newMessage.senderId);
+      const msgReceiverId = Number(newMessage.receiverId);
+
+      const incomingChatId = newMessage.channelId
+        ? `channel_${newMessage.channelId}`
+        : newMessage.receiverId 
+          ? (msgSenderId === currentUserId ? `user_${msgReceiverId}` : `user_${msgSenderId}`)
+          : 'chat_general';
+
+      if (incomingChatId !== activeChatIdRef.current) {
+        setChats(prevChats => prevChats.map(chat => {
+          if (chat.id === incomingChatId) {
+            return { ...chat, unreadCount: (chat.unreadCount || 0) + 1 };
+          }
+          return chat;
+        }));
+      }
+
+      // Звуковое уведомление (генерация пика через AudioContext)
+      if (Number(newMessage.senderId) !== Number(user.id)) {
         try {
           const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
           const oscillator = audioCtx.createOscillator();
@@ -116,63 +215,48 @@ export default function App() {
           console.log("Звук заблокирован:", err);
         }
       }
+    });
 
-       setMessages(prevMessages => [...prevMessages, newMessage]);
-      
-      const currentUserId = Number(user?.id);
-      const msgSenderId = Number(newMessage.senderId);
-      const msgReceiverId = Number(newMessage.receiverId);
+    // === 2. СЛУШАТЕЛЬ СОЗДАНИЯ КАНАЛОВ ===
+    socket.on('channel_created', (newChannel) => {
+      console.log('📢 Через сокет получен новый канал:', newChannel);
+      setChannels((prev) => {
+        if (prev.some(ch => ch.id === newChannel.id)) return prev;
+        return [...prev, newChannel];
+      });
+    });
 
-      const incomingChatId = newMessage.receiverId 
-        ? (msgSenderId === currentUserId ? `user_${msgReceiverId}` : `user_${msgSenderId}`)
-        : 'chat_general';
-
-      if (incomingChatId !== activeChatIdRef.current) {
-        setChats(prevChats => prevChats.map(chat => {
-          if (chat.id === incomingChatId) {
-            return { ...chat, unreadCount: (chat.unreadCount || 0) + 1 };
-          }
-          return chat;
-        }));
-      }});
-socketRef.current.on('message_deleted', ({ messageId }) => {
+    // === 3. СЛУШАТЕЛЬ УДАЛЕНИЯ СООБЩЕНИЙ ===
+    socket.on('message_deleted', ({ messageId }) => {
       console.log('🗑️ Фронтенд поймал сокет удаления сообщения:', messageId);
       setMessages(prev => 
         prev.map(m => m.id === Number(messageId) ? { ...m, text: "Сообщение удалено", isDeleted: true } : m)
       );
     });
-    // ===  СЛУШАЕМ УДАЛЕНИЕ В РЕАЛЬНОМ ВРЕМЕНИ ===
-        // Слушатели статуса печатания через объект
-    socketRef.current.on('typing', ({ senderId, isGeneral }) => {
-      setTypingUser({ id: senderId, isGeneral });
-    });
-    
-    socketRef.current.on('stop_typing', () => {
-      setTypingUser(null);
-    });
 
-    
-        socketRef.current.on('typing', ({ senderId, isGeneral }) => {
-      // Сохраняем ID того, кто печатает
-      setTypingUser({ id: senderId, isGeneral });
+    // === 4. СЛУШАТЕЛЬ СТАТУСА ПЕЧАТАНИЯ ===
+    let typingTimer = null;
+    socket.on('typing', ({ senderId, isGeneral }) => {
+      setTypingUser({ senderId, isGeneral });
+
+      if (typingTimer) clearTimeout(typingTimer);
+      typingTimer = setTimeout(() => {
+        setTypingUser(null);
+      }, 2500);
     });
 
-    socketRef.current.on('stop_typing', () => {
-      setTypingUser(null);
-    });
-
-
-    return () => { 
-      if (socketRef.current) {
-        // Чистим слушатели тоже через socketRef.current
-        socketRef.current.off('receive_message');
-        socketRef.current.off('message_deleted'); 
-        socketRef.current.off('typing');
-        socketRef.current.off('stop_typing');
-        socketRef.current.disconnect(); 
-      }
+    // Функция-уборщик реакта
+    return () => {
+      if (typingTimer) clearTimeout(typingTimer);
+      socket.off('connect');
+      socket.off('receive_message');
+      socket.off('message_deleted');
+      socket.off('typing');
+      socket.off('channel_created');
     };
-  }, [user]); // Конец эффекта инициализации сокетов
+  }, [user]); // Слушаем только авторизованного пользователя, НИКАКИХ activeChatId!
+
+
 
 
     // НОВЫЙ ЭФФЕКТ: Сообщаем серверу о смене чата, чтобы переключить комнату сокетов
@@ -213,9 +297,9 @@ socketRef.current.on('message_deleted', ({ messageId }) => {
 
   useEffect(() => { setIsProfileOpen(false); }, [activeChatId]);
   // Автоскролл к последнему сообщению
-  useEffect(() => { 
+  /*useEffect(() => { 
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); 
-  }, [messages]);
+  }, [messages]);*/
 
       const handleDeleteMessage = (msgId) => {
     // Проверяем, что сокет подключен, и отправляем через .current
@@ -225,6 +309,161 @@ socketRef.current.on('message_deleted', ({ messageId }) => {
         activeChatId: activeChatId 
       });
     }
+  };
+    // 🔥 ДОБАВЛЯЕМ: Функция форматирования времени для Sidebar
+  const formatMsgTime = (dateString) => {
+    if (!dateString) return '';
+    try {
+      const d = new Date(dateString);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
+  };
+
+const handleSelectChat = async (chatId) => {
+  if (!chatId) return;
+  
+  console.log("=== Переключение чата на ID:", chatId);
+  
+  // 1. Фиксируем ID активной комнаты
+  setActiveChatId(chatId);
+  
+  // 2. Мгновенно сбрасываем старые данные во избежание визуального залипания
+  setActiveChatData(null); 
+
+  const stringChatId = chatId.toString();
+
+  // 3. ОБЩИЙ ЧАТ
+  if (stringChatId === 'chat_general') {
+    setActiveChatData({
+      name: 'Общий чат',
+      avatar: '💬',
+      type: 'general'
+    });
+    return;
+  }
+
+  // 4. КАНАЛЫ
+  if (stringChatId.startsWith('channel_')) {
+    const cleanChannelId = stringChatId.replace('channel_', '');
+    const currentChannel = channels.find(ch => 
+      ch && ch.id && (ch.id.toString() === cleanChannelId || ch.id.toString() === stringChatId)
+    );
+    
+    if (currentChannel) {
+      setActiveChatData({
+        name: currentChannel.name,
+        avatar: currentChannel.avatar || '📢',
+        type: 'channel',
+        creatorId: currentChannel.creatorId ? Number(currentChannel.creatorId) : null
+      });
+    } else {
+      setActiveChatData({
+        name: `Канал #${cleanChannelId}`,
+        avatar: '📢',
+        type: 'channel'
+      });
+    }
+    return;
+  }
+
+  // 5. ПРИВАТНЫЕ ЧАТЫ (user_)
+  if (stringChatId.startsWith('user_')) {
+    const cleanUserId = stringChatId.replace('user_', '');
+    
+    // Принудительно ищем по совпадению очищенных строк ID
+    let targetUser = chats.find(c => {
+      if (!c || !c.id) return false;
+      const parsedId = c.id.toString().replace('user_', '');
+      return parsedId === cleanUserId;
+    });
+
+    if (!targetUser && typeof contacts !== 'undefined' && contacts) {
+      targetUser = contacts.find(c => c && c.id && c.id.toString() === cleanUserId);
+    }
+    
+    if (targetUser) {
+      setActiveChatData({
+        name: targetUser.name || targetUser.username || `Пользователь #${cleanUserId}`,
+        avatar: targetUser.avatar || '👤',
+        type: 'user'
+      });
+      return;
+    }
+
+    // Железобетонный бэкап-запрос к серверу
+    try {
+      console.log(`🔍 Собеседник не найден локально. Запрос к API для ID: ${cleanUserId}`);
+      const response = await fetch(`http://localhost:5001/api/users`);
+      if (response.ok) {
+        const allUsers = await response.json();
+        const serverUser = allUsers.find(u => u && u.id && u.id.toString() === cleanUserId);
+        
+        if (serverUser) {
+          setActiveChatData({
+            name: serverUser.name || serverUser.username || `Пользователь #${cleanUserId}`,
+            avatar: serverUser.avatar || '👤',
+            type: 'user'
+          });
+          return;
+        }
+      }
+    } catch (err) {
+      console.error('Ошибка бэкап-запроса пользователя:', err);
+    }
+
+    // Тотальный Fallback, если локально и на сервере пусто
+    setActiveChatData({
+      name: `Пользователь #${cleanUserId}`,
+      avatar: '👤',
+      type: 'user'
+    });
+  }
+};
+
+
+
+    const getActiveChatMessages = () => {
+    // 1. ОБЩИЙ ЧАТ: только сообщения без канала и БЕЗ конкретного получателя
+    if (activeChatId === 'chat_general') {
+      return messages.filter(m => !m.channelId && !m.receiverId && !m.roomId);
+    }
+    
+    // 2. ПУБЛИЧНЫЕ КАНАЛЫ: строго по channelId
+    if (activeChatId.startsWith('channel_')) {
+      const channelDbId = Number(activeChatId.replace('channel_', ''));
+      return messages.filter(m => Number(m.channelId) === channelDbId);
+    }
+    
+    // 3. ЛИЧНЫЕ ЧАТЫ (ТЕТ-А-ТЕТ): строго между двумя конкретными пользователями
+    if (activeChatId.startsWith('user_')) {
+      const targetUserId = Number(activeChatId.replace('user_', ''));
+      return messages.filter(m => 
+        (Number(m.senderId) === Number(user.id) && Number(m.receiverId) === targetUserId) ||
+        (Number(m.senderId) === targetUserId && Number(m.receiverId) === Number(user.id))
+      );
+    }
+
+    return messages.filter(m => m.roomId === activeChatId);
+  };
+
+
+  
+  // =========================================================================
+  const activeChat = {
+    id: activeChatId,
+    messages: getActiveChatMessages(),
+    
+    // Подтягиваем имя в зависимости от типа активного чата
+    name: activeChatId === 'chat_general' 
+      ? 'Общий чат (PostgreSQL)' 
+      : (activeChatData?.name || 'Чат'),
+      
+    // Подтягиваем аватарку
+    avatar: activeChatId === 'chat_general' 
+      ? '💬' 
+      : (activeChatData?.avatar || '👤')
   };
 
 
@@ -251,18 +490,19 @@ socketRef.current.on('message_deleted', ({ messageId }) => {
   };
 
       // 4. ФУНКЦИЯ: Отправка КАРТИНКИ
-  const handleSendImage = (imageUrl) => {
-    const messageData = {
-      text: null,
-      mediaUrl: imageUrl,
-      mediaType: 'image',
-      senderId: user.id,
-      activeChatId: activeChatId
-    };
-    if (socketRef.current) {
-      socketRef.current.emit('send_message', messageData);
-    }
+  const handleSendImage = (urlFromMulter) => {
+  const messageData = {
+    text: null,
+    mediaUrl: urlFromMulter, // 🔥 Проверить, чтобы бэкенд получал именно mediaUrl!
+    mediaType: 'image',
+    senderId: user.id,
+    activeChatId: activeChatId
   };
+  if (socketRef.current) {
+    socketRef.current.emit('send_message', messageData);
+  }
+};
+
 
   // 5. ФУНКЦИЯ: Отправка АУДИО
   const handleSendAudio = (audioUrl) => {
@@ -318,8 +558,8 @@ socketRef.current.on('message_deleted', ({ messageId }) => {
     c.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Определяем активный чат
-  const activeChat = chatsWithMessages.find(c => c.id === activeChatId) || chatsWithMessages[0];
+  
+
 
   return (
     <div className="bg-zinc-100 dark:bg-zinc-900 text-zinc-900 dark:text-white h-screen flex justify-center items-center font-sans antialiased transition-colors duration-300">
@@ -327,6 +567,7 @@ socketRef.current.on('message_deleted', ({ messageId }) => {
         
         <Sidebar 
           chats={filteredChats} 
+          activeChat={activeChat}
           activeChatId={activeChatId} 
           setActiveChatId={setActiveChatId} 
           searchQuery={searchQuery} 
@@ -334,26 +575,33 @@ socketRef.current.on('message_deleted', ({ messageId }) => {
           isDarkMode={isDarkMode} 
           onToggleTheme={() => setIsDarkMode(!isDarkMode)} 
           onLogout={handleLogout} 
+          formatMsgTime={formatMsgTime}
+          channels={channels}
+          onSelectChat={handleSelectChat}
+          onCreateChannel={handleCreateChannel}
         />
         
-        <ChatArea 
+                  <ChatArea 
+          key={activeChatId} // ⚡ Мгновенно пересоздает чат при переключении, убирая любые залипания
           activeChatId={activeChatId} 
           activeChat={activeChat} 
+          activeChatData={activeChatData} 
+          messages={getActiveChatMessages()} // 🔥 Передаем отфильтрованные сообщения на экран!
           setActiveChatId={setActiveChatId} 
           inputValue={inputValue} 
           setInputValue={setInputValue} 
           handleSendMessage={handleSendMessage} 
           messagesEndRef={messagesEndRef} 
-          onDeleteMessage={handleDeleteMessage}
           socketRef={socketRef}
-          typingUser={typingUser} 
+          typingUser={typingUser} // Передаем объект печатающего пользователя
           onDeleteMessage={handleDeleteMessage} 
           onSendImage={handleSendImage} 
           onSendAudio={handleSendAudio} 
           onToggleProfile={() => setIsProfileOpen(!isProfileOpen)} 
           currentUserId={user?.id} 
-          typingUser={typingUser}
         />
+
+
         
         <ProfilePanel 
           activeChat={activeChat} 
