@@ -167,17 +167,29 @@ export default function App() {
     socket.off('typing');
     socket.off('channel_created');
 
+    // Создаем кэш обработанных ID на самом верху эффекта сокетов (или используйте глобальную переменную)
+    // Это заблокирует повторные сокетные пакеты намертво до вызова тяжелых стейтов React
+    const processedMessagesCache = new Set();
+
     // === 1. СЛУШАТЕЛЬ НОВЫХ СООБЩЕНИЙ ===
     socket.on('receive_message', (newMessage) => {
-      console.log('📥 Получено новое сообщение:', newMessage);
+      // 1. ЖЕСТКАЯ ПРОВЕРКА НА УРОВНЕ КЭША
+      if (processedMessagesCache.has(newMessage.id)) {
+        console.log(`🛡️ Сокетный дубликат сообщения #${newMessage.id} успешно заблокирован на входе!`);
+        return; // Мгновенно выходим, вообще не трогая стейты
+      }
 
-      // Железная защита от дублирования сообщений по ID
+      // Добавляем ID в кэш
+      processedMessagesCache.add(newMessage.id);
+      console.log('📥 Получено уникальное новое сообщение:', newMessage);
+
+      // 2. Теперь спокойно и без багов обновляем массив сообщений
       setMessages((prev) => {
-        if (prev.some((msg) => msg.id === newMessage.id)) return prev; 
+        if (prev.some((msg) => msg.id === newMessage.id)) return prev;
         return [...prev, newMessage];
       });
 
-      // Логика счетчиков непрочитанных сообщений (зеленые кружочки)
+      // 3. Вычисляем ID чата, куда прилетело сообщение
       const currentUserId = Number(user?.id);
       const msgSenderId = Number(newMessage.senderId);
       const msgReceiverId = Number(newMessage.receiverId);
@@ -188,6 +200,7 @@ export default function App() {
           ? (msgSenderId === currentUserId ? `user_${msgReceiverId}` : `user_${msgSenderId}`)
           : 'chat_general';
 
+      // 4. Безопасно обновляем зеленый кружочек — он сработает строго 1 раз!
       if (incomingChatId !== activeChatIdRef.current) {
         setChats(prevChats => prevChats.map(chat => {
           if (chat.id === incomingChatId) {
@@ -197,7 +210,7 @@ export default function App() {
         }));
       }
 
-      // Звуковое уведомление (генерация пика через AudioContext)
+      // Звуковое уведомление
       if (Number(newMessage.senderId) !== Number(user.id)) {
         try {
           const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -217,7 +230,9 @@ export default function App() {
       }
     });
 
-    // === 2. СЛУШАТЕЛЬ СОЗДАНИЯ КАНАЛОВ ===
+
+
+       // === 2. СЛУШАТЕЛЬ СОЗДАНИЯ КАНАЛОВ ===
     socket.on('channel_created', (newChannel) => {
       console.log('📢 Через сокет получен новый канал:', newChannel);
       setChannels((prev) => {
@@ -245,6 +260,35 @@ export default function App() {
       }, 2500);
     });
 
+    // === 5. СЛУШАТЕЛЬ ОБНОВЛЕНИЯ СТАТУСА ПРОЧТЕНИЯ ===
+    socket.on('messages_read_update', ({ activeChatId: readChatId, readerId }) => {
+      console.log(`📡 Сокет поймал прочтение чата ${readChatId} пользователем ${readerId}`);
+      
+      setMessages(prev => {
+        // Создаем глубокую копию массива, чтобы React железно увидел обновление стейта
+        return prev.map(m => {
+          // Проверяем, относится ли сообщение к прочитанному чату
+          const isTargetMsg = readChatId === 'chat_general'
+            ? (!m.channelId && !m.receiverId)
+            : readChatId.startsWith('channel_')
+              ? String(m.channelId) === String(readChatId.replace('channel_', ''))
+              : (String(m.senderId) === String(readerId) || String(m.receiverId) === String(readerId));
+
+          // Если это сообщение из нужного чата и отправлено НЕ тем, кто сейчас его прочитал
+          if (isTargetMsg && String(m.senderId) !== String(readerId)) {
+            // Возвращаем НОВЫЙ объект сообщения со статусом 'read'
+            return { 
+              ...m, 
+              status: 'read' 
+            };
+          }
+          // Возвращаем сообщение без изменений
+          return m;
+        });
+      });
+    });
+
+
     // Функция-уборщик реакта
     return () => {
       if (typingTimer) clearTimeout(typingTimer);
@@ -253,19 +297,17 @@ export default function App() {
       socket.off('message_deleted');
       socket.off('typing');
       socket.off('channel_created');
+      socket.off('messages_read_update');
     };
-  }, [user]); // Слушаем только авторизованного пользователя, НИКАКИХ activeChatId!
+  }, [user]); 
+  // ↑ ЗДЕСЬ МЫ ЖЕСТКО ЗАКРЫЛИ ГЛАВНЫЙ EFFECT СО ВСЕМИ СЛУШАТЕЛЯМИ
 
-
-
-
-    // НОВЫЙ ЭФФЕКТ: Сообщаем серверу о смене чата, чтобы переключить комнату сокетов
+  // НОВЫЙ ЭФФЕКТ: Сообщаем серверу о смене чата, чтобы переключить комнату сокетов
   useEffect(() => {
-    // Используем строго socketRef.current
     if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('join_chat', activeChatId);
     }
-    setTypingUser(false); // Сбрасываем индикатор печатания при переходе в другой чат
+    setTypingUser(false);
   }, [activeChatId]);
 
 
@@ -488,6 +530,16 @@ const handleSelectChat = async (chatId) => {
 
     setInputValue('');
   };
+    const handleKeyDown = (e) => {
+    // Если нажат Enter БЕЗ зажатого Shift
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault(); // Блокируем стандартный перенос строки текстового поля
+      handleSendMessage(e); // Вызываем вашу функцию отправки сообщения
+    }
+    // Если нажат Enter С зажатым Shift — React ничего не блокирует,
+    // и браузер автоматически сделает перенос строки внутри textarea.
+  };
+
 
       // 4. ФУНКЦИЯ: Отправка КАРТИНКИ
   const handleSendImage = (urlFromMulter) => {

@@ -35,6 +35,8 @@ export default function ChatArea({
   
   const scrollContainerRef = useRef(null); // Реф на контейнер со скроллом
   const firstUnreadRef = useRef(null);     // Реф на первое непрочитанное
+  const readingObserver = useRef(null);
+
 
   // Закрытие меню
   useEffect(() => {
@@ -43,84 +45,185 @@ export default function ChatArea({
     return () => window.removeEventListener('click', handleCloseMenu);
   }, []);
 
-    // Ищем первое непрочитанное сообщение от собеседника (исправлено msg -> m)
-  const firstUnreadMsg = (messages || []).find(
-    m => m && 
-         m.senderId !== undefined && 
-         String(m.senderId) !== String(currentUserId) && 
-         m.isDeleted !== true &&
-         m.status !== 'read'
-  );
 
 
-  // 🏁 ЭФФЕКТ А. Стартовое позиционирование при смене чата
+      // Ищем первое непрочитанное сообщение СТРОГО внутри текущего чата/канала
+  const firstUnreadMsg = (messages || []).find(m => {
+    if (!m || m.senderId === undefined || m.isDeleted === true) return false;
+
+    // 1. Проверяем, что сообщение пришло НЕ от нас
+    const isForeign = String(m.senderId) !== String(currentUserId);
+    if (!isForeign) return false;
+
+    const cleanActiveId = String(activeChatId).replace('user_', '').replace('channel_', '');
+
+    // 2. ВЕТВЛЕНИЕ ПО ТИПАМ ЧАТОВ
+
+    // ПУБЛИЧНЫЕ КАНАЛЫ (Мягкая проверка: чужое и статус не равен 'read')
+    if (activeChatId.startsWith('channel_')) {
+      const isChannelMsg = m.channelId && String(m.channelId) === cleanActiveId;
+      return isChannelMsg && m.status !== 'read';
+    }
+    
+    // ПРИВАТНЫЕ ЧАТЫ (Строгая проверка: статус должен быть железно 'unread' для защиты от null в базе)
+    if (activeChatId.startsWith('user_')) {
+      const isDirectMsg = String(m.senderId) === cleanActiveId;
+      return isDirectMsg && m.status === 'unread';
+    }
+    
+    // ОБЩИЙ ЧАТ
+    if (activeChatId === 'chat_general') {
+      return !m.channelId && !m.receiverId && m.status !== 'read';
+    }
+
+    return false;
+  });
+
+
+  
+
+    // Реф для блокировки сокетного автоскролла в первые мгновения открытия чата
+    const lastProcessedChatId = useRef(null);
+  const isLockingNewMessages = useRef(false);
+
+  // 1. Триггер мгновенного закрытия шторки при клике на чат в сайдбаре
+  useEffect(() => {
+    setIsPositioning(true);
+    isLockingNewMessages.current = true;
+  }, [activeChatId]);
+
+
+
+  // 🏁 ЕДИНЫЙ СИНХРОНИЗИРОВАННЫЙ ЭФФЕКТ СКРОЛЛА
   useEffect(() => {
     if (!messages || messages.length === 0) {
-      console.log("⚠️ Смарт-скролл: Массив сообщений пуст или не передан");
+      if (isPositioning) setIsPositioning(false);
       return;
     }
 
-    console.log("🔍 Проверка при смене чата:", {
-      'Всего сообщений': messages.length,
-      'Найдено непрочитанное собеседника': firstUnreadMsg ? `Да, ID: ${firstUnreadMsg.id}` : 'Нет',
-      'ID текущего юзера': currentUserId,
-      'Последнее сообщение от': messages[messages.length - 1]?.senderId
-    });
-
-    setIsPositioning(true);
-    isUserScrolledUp.current = false;
-    setShowScrollBtn(false);
-    setUnreadCountWhileReading(0);
-
-       const timer = setTimeout(() => {
-      if (firstUnreadMsg && firstUnreadRef.current) {
-        console.log("🎯 Смарт-скролл: Выполняю прыжок к МАРКЕРУ");
-        firstUnreadRef.current.scrollIntoView({ behavior: 'auto', block: 'center' });
-      } else if (messagesEndRef.current) {
-        console.log("🔽 Смарт-скролл: Непрочитанных нет, прыгаю В САМЫЙ НИЗ");
-        messagesEndRef.current.scrollIntoView({ behavior: 'auto' }); // 👈 РАСКОММЕНТИРОВАЛИ!
-      }
-      setIsPositioning(false);
-    }, 15);
- // Немного увеличили задержку до 80мс для стабильности рендеринга DOM
-
-    return () => clearTimeout(timer);
-  }, [activeChatId]);
-
-  // 📜 ЭФФЕКТ Б. Обработка новых сообщений (Умный автоскролл)
-  useEffect(() => {
-    // ЗАЩИТА: Если чат прямо сейчас только загружается и позиционируется — блокируем этот эффект!
-    if (isPositioning || !messages || messages.length === 0) return;
-
-    const lastMsg = messages[messages.length - 1];
-    const isLastMsgMe = Number(lastMsg?.senderId) === Number(currentUserId);
-
-    if (isLastMsgMe) {
+    // СЛУЧАЙ 1: Стартовое позиционирование при смене чата
+    if (lastProcessedChatId.current !== activeChatId) {
+      console.log("🔄 Лог: Сообщения для нового чата отрисовались. Позиционирую...");
+      
       isUserScrolledUp.current = false;
       setShowScrollBtn(false);
       setUnreadCountWhileReading(0);
-      setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }, 50);
-    } else {
-      if (isUserScrolledUp.current) {
-        setUnreadCountWhileReading(prev => prev + 1);
-      } else {
+
+      // Запрашиваем у браузера кадр анимации, чтобы дождаться перестроения DOM-структуры
+      requestAnimationFrame(() => {
+        // Микро-таймер на 60-80мс дает React время полностью наполнить контейнер сообщениями
+        const timer = setTimeout(() => {
+          
+          // Проверяем наличие маркера на основе свежих данных
+        if (firstUnreadMsg && firstUnreadRef.current) {
+          console.log("🎯 Смарт-скролл: Прыгаю к МАРКЕРУ");
+          firstUnreadRef.current.scrollIntoView({ behavior: 'auto', block: 'center' });
+        } else {
+          console.log("🔽 Смарт-скролл: Прижимаю В САМЫЙ НИЗ (Запасной план)");
+          // Прямая манипуляция со скроллом, которая работает быстрее, чем scrollIntoView в React
+          if (scrollContainerRef.current) {
+            scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+          }
+          messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+        }
+
+
+          
+          lastProcessedChatId.current = activeChatId;
+          setIsPositioning(false);
+          
+          setTimeout(() => {
+            isLockingNewMessages.current = false;
+          }, 150);
+        }, 80); // 80мс — гарантированное окно для рендеринга тяжелой истории сообщений
+
+        return () => clearTimeout(timer);
+      });
+
+      return;
+    }
+
+    // СЛУЧАЙ 2: Динамический автоскролл при летящих сообщениях из сокетов
+    if (!isPositioning && !isLockingNewMessages.current) {
+      const lastMsg = messages[messages.length - 1];
+      const isLastMsgMe = Number(lastMsg?.senderId) === Number(currentUserId);
+
+      if (isLastMsgMe) {
+        isUserScrolledUp.current = false;
+        setShowScrollBtn(false);
+        setUnreadCountWhileReading(0);
         setTimeout(() => {
           messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 50);
+        }, 30);
+      } else {
+        if (isUserScrolledUp.current) {
+          setUnreadCountWhileReading(prev => prev + 1);
+        } else {
+          setTimeout(() => {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          }, 30);
+        }
       }
     }
-  }, [messages, isPositioning]); // 👈 Добавили dependency isPositioning
+  }, [messages, activeChatId, isPositioning]);
+
+
+  // 👀 ЭФФЕКТ ЧТЕНИЯ: Гасим плашку, когда пользователь до неё доскроллил
+  useEffect(() => {
+    // Если плашки на экране нет — отключаем слежку и выходим
+    if (!firstUnreadMsg) {
+      if (readingObserver.current) readingObserver.current.disconnect();
+      return;
+    }
+
+    // Очищаем старый обсервер при переключениях
+    if (readingObserver.current) readingObserver.current.disconnect();
+
+    // Создаем новый обсервер
+    readingObserver.current = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        // Если маркер виден на экране более чем на 70% и чат уже отпозиционирован
+          
+        if (entry.isIntersecting && !isPositioning) {
+          console.log("👁️ Смарт-сенсор: Юзер увидел плашку непрочитанных!");
+
+          // 1. Отправляем сигнал на бэкенд через сокеты
+          if (socketRef.current && socketRef.current.connected) {
+            socketRef.current.emit('read_messages', { 
+              activeChatId, 
+              currentUserId: currentUserId // 🔥 ИСПРАВЛЕНО: заменили user?.id на текущий рабочий currentUserId
+            });
+          }
+
+          // 2. Локально отключаем обсервер
+          readingObserver.current.disconnect();
+        }
+
+      });
+    }, { root: scrollContainerRef.current, threshold: 0.7 });
+
+    // Даем микропаузу 300мс, чтобы скролл завершился, и вешаем слежку строго на реф плашки
+    const timer = setTimeout(() => {
+      if (firstUnreadRef.current && readingObserver.current) {
+        readingObserver.current.observe(firstUnreadRef.current);
+      }
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      if (readingObserver.current) readingObserver.current.disconnect();
+    };
+  }, [activeChatId, messages, isPositioning,currentUserId]); // Перезапускаем при изменении сообщений или чата
 
 
   // 🎛️ Обработчик прокрутки ленты
-  const handleScroll = () => {
+    const handleScroll = () => {
     if (!scrollContainerRef.current) return;
 
     const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
+    // Если пользователь поднялся выше 200px от дна чата
     if (distanceFromBottom > 200) {
       isUserScrolledUp.current = true;
       setShowScrollBtn(true);
@@ -351,10 +454,15 @@ export default function ChatArea({
                   </div>
                     {/* Лента сообщений с Anti-Flicker барьером и отслеживанием скролла */}
           <div 
-            ref={scrollContainerRef}
-            onScroll={handleScroll}
-            className={`flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar bg-zinc-950/20 transition-opacity duration-200 ${isPositioning ? 'opacity-0' : 'opacity-100'}`}
-          >
+  ref={scrollContainerRef}
+  onScroll={handleScroll}
+  /* scroll-behavior: auto отключает плавность, чтобы прыжок был мгновенным и незаметным под opacity-0 */
+  style={{ scrollBehavior: isPositioning ? 'auto' : 'smooth' }}
+  className={`flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar bg-zinc-950/20 transition-opacity duration-150 ${
+    isPositioning ? 'opacity-0 invisible' : 'opacity-100 visible'
+  }`}
+>
+
             {(messages || []).map(msg => {
               const isMe = Number(msg.senderId) === Number(currentUserId);
               const formattedTime = formatMsgTime(msg.createdAt);
@@ -419,7 +527,7 @@ export default function ChatArea({
                         </div>
                      ) : (
                         <>
-                          <p className="leading-relaxed break-words">{msg.text || msg.content}</p>
+                          <p className="leading-relaxed break-words  whitespace-pre-wrap">{msg.text || msg.content}</p>
                           <div className="flex items-center justify-end gap-1 self-end">
                             <span className={`text-[9px] ${isMe ? 'text-white/60' : 'text-zinc-400 dark:text-zinc-500'}`}>{formattedTime}</span>
                             {isMe && (
@@ -491,19 +599,27 @@ export default function ChatArea({
                   <span>{formatTime(recordingTime)}</span>
                 </div>
               ) : (
-                <input 
-                  type="text" 
-                  value={inputValue} 
-                  onChange={(e) => {
-                    setInputValue(e.target.value);
-                    if (socketRef && socketRef.current) {
-                      socketRef.current.emit('typing', { activeChatId, senderId: currentUserId });
-                    }
-                  }} 
-                  placeholder="Напишите сообщение..." 
-                  autoComplete="off" 
-                  className="flex-1 bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200/60 dark:border-zinc-700/50 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 transition text-zinc-800 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-500" 
-                />
+     <textarea 
+  value={inputValue} 
+  onChange={(e) => {
+    setInputValue(e.target.value);
+    if (socketRef && socketRef.current) {
+      socketRef.current.emit('typing', { activeChatId, senderId: currentUserId });
+    }
+  }} 
+  onKeyDown={(e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault(); 
+      handleSendMessage(e); 
+    }
+  }}
+  placeholder="Напишите сообщение..." 
+  autoComplete="off" 
+  rows={1}
+  className="flex-1 bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200/60 dark:border-zinc-700/50 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 transition text-zinc-800 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-500 resize-none min-h-[40px] max-h-[120px] no-scrollbar py-2" 
+/> 
+
+
               )}
 
               {inputValue.trim() === '' ? (
