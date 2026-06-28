@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 
-export default function Auth({ onAuthSuccess }) {
+// Принимаем проп apiBaseUrl из App.jsx для бесшовной мобильной Capacitor-сборки
+export default function Auth({ onAuthSuccess, apiBaseUrl }) {
   const [isLogin, setIsLogin] = useState(true); // true = вход, false = регистрация
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -12,11 +13,12 @@ export default function Auth({ onAuthSuccess }) {
     setError('');
     setLoading(true);
 
-    // Выбираем маршрут в зависимости от режима (вход или регистрация)
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
+    // Используем динамический URL сервера из пропов, либо локальный фоллбек
+    const currentBaseUrl = apiBaseUrl || 'http://localhost:5001';
 
     try {
-      const response = await fetch(`http://localhost:5001${endpoint}`, {
+      const response = await fetch(`${currentBaseUrl}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -28,12 +30,14 @@ export default function Auth({ onAuthSuccess }) {
         throw new Error(data.error || 'Что-то пошло не так');
       }
 
-      // Сохраняем полученные данные в браузер (localStorage)
+      // [БЕЗОПАСНОСТЬ] Сначала сохраняем валидный токен и юзера локально для автозахода
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
 
-      // Передаем авторизованного юзера наверх в App.jsx
-      onAuthSuccess(data.user);
+      // [ИСПРАВЛЕНО] Передаем ОБА аргумента (user и токен) наверх в App.jsx, убирая баг с undefined
+      if (typeof onAuthSuccess === 'function') {
+        onAuthSuccess(data.user, data.token);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -93,7 +97,7 @@ export default function Auth({ onAuthSuccess }) {
           </button>
         </form>
 
-                <div className="text-center text-sm mt-4">
+        <div className="text-center text-sm mt-4">
           <button
             onClick={() => { setIsLogin(!isLogin); setError(''); }}
             className="font-medium text-blue-500 hover:text-blue-400 dark:text-blue-400 cursor-pointer transition-colors"

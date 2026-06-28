@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { API_BASE_URL, SCROLL_CONFIG, MEDIA_TYPES } from '../config';
 
 export default function ChatArea({ 
   activeChatId, 
@@ -15,9 +16,13 @@ export default function ChatArea({
   onSendAudio,
   activeChatData,
   messages,
-  currentUserId,// ID текущего юзера для проверки (isMe)
+  currentUserId,
   socketRef,
-  typingUser 
+  typingUser,
+  onLoadMoreHistory,
+  hasMoreHistory,
+  apiBaseUrl = API_BASE_URL,
+  isHistoryLoading 
 }) {
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, msgId: null });
   const fileInputRef = useRef(null);
@@ -27,182 +32,264 @@ export default function ChatArea({
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
-  // --- Смарт-скролл и позиционирование ---
+  
+  // --- Смарт-скролл и позиционирование в классической ленте ---
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [isPositioning, setIsPositioning] = useState(false); // Anti-Flicker барьер
-  const [unreadCountWhileReading, setUnreadCountWhileReading] = useState(0); // Счетчик для кнопки "Вниз"
-  const isUserScrolledUp = useRef(false); // Блокировка автоскролла без лишних ререндеров
+  const [unreadCountWhileReading, setUnreadCountWhileReading] = useState(0); 
+  const isUserScrolledUp = useRef(false); // Блокировка автоскролла при чтении истории
   
   const scrollContainerRef = useRef(null); // Реф на контейнер со скроллом
   const firstUnreadRef = useRef(null);     // Реф на первое непрочитанное
   const readingObserver = useRef(null);
+  const topSensorRef = useRef(null);       // Реф на верхнюю границу для подгрузки истории
+  const scrollMetrics = useRef({ oldHeight: 0, oldTop: 0, activeChatId: null });
+  const observerRef = useRef(null);
+  const intervalRef = useRef(null);
 
+  // Метод плавного скролла вниз (к самым свежим сообщениям)
+  const scrollToBottomSmooth = () => {
+    isUserScrolledUp.current = false;
+    setShowScrollBtn(false);
+    setUnreadCountWhileReading(0);
+    
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTo({
+        top: scrollContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  };
+  const isTypingEmittedRef = useRef(false);
 
-  // Закрытие меню
+  // Закрытие контекстного меню по клику
   useEffect(() => {
     const handleCloseMenu = () => setContextMenu({ visible: false, x: 0, y: 0, msgId: null });
     window.addEventListener('click', handleCloseMenu);
     return () => window.removeEventListener('click', handleCloseMenu);
   }, []);
 
-
-
-      // Ищем первое непрочитанное сообщение СТРОГО внутри текущего чата/канала
+  // =========================================================================
+  // 👀 ОЖИВЛЯЕМ СЧЕТЧИКИ НЕПРОЧИТАННЫХ И УВЕДОМЛЕНИЯ В КАНАЛАХ
+  // =========================================================================
   const firstUnreadMsg = (messages || []).find(m => {
-    if (!m || m.senderId === undefined || m.isDeleted === true) return false;
+    if (!m || m.isDeleted === true) return false;
 
     // 1. Проверяем, что сообщение пришло НЕ от нас
     const isForeign = String(m.senderId) !== String(currentUserId);
     if (!isForeign) return false;
 
+    // Очищаем активный ID от префиксов для точечного сравнения с БД
     const cleanActiveId = String(activeChatId).replace('user_', '').replace('channel_', '');
 
-    // 2. ВЕТВЛЕНИЕ ПО ТИПАМ ЧАТОВ
-
-    // ПУБЛИЧНЫЕ КАНАЛЫ (Мягкая проверка: чужое и статус не равен 'read')
-    if (activeChatId.startsWith('channel_')) {
+    // 2. ВЕТВЛЕНИЕ ПО ТИПАМ КОМНАТ ДЛЯ СБРОСА УВЕДОМЛЕНИЙ
+    if (String(activeChatId).startsWith('channel_')) {
+      // Для каналов: проверяем, совпадает ли ID канала и что статус не равен 'read'
       const isChannelMsg = m.channelId && String(m.channelId) === cleanActiveId;
-      return isChannelMsg && m.status !== 'read';
+      return isChannelMsg && m.status !== 'read' && m.isRead !== true;
     }
     
-    // ПРИВАТНЫЕ ЧАТЫ (Строгая проверка: статус должен быть железно 'unread' для защиты от null в базе)
-    if (activeChatId.startsWith('user_')) {
+    if (String(activeChatId).startsWith('user_')) {
+      // Для лички: проверяем, что отправитель — это наш собеседник
       const isDirectMsg = String(m.senderId) === cleanActiveId;
-      return isDirectMsg && m.status === 'unread';
+      return isDirectMsg && (m.status === 'unread' || m.status !== 'read');
     }
     
-    // ОБЩИЙ ЧАТ
     if (activeChatId === 'chat_general') {
-      return !m.channelId && !m.receiverId && m.status !== 'read';
+      // Для общего чата: проверяем, что это не приват и не канал
+      return !m.channelId && !m.receiverId && m.status !== 'read' && m.isRead !== true;
     }
 
     return false;
   });
 
 
-  
 
-    // Реф для блокировки сокетного автоскролла в первые мгновения открытия чата
-    const lastProcessedChatId = useRef(null);
+  const lastProcessedChatId = useRef(null);
   const isLockingNewMessages = useRef(false);
 
-  // 1. Триггер мгновенного закрытия шторки при клике на чат в сайдбаре
+  // Мгновенный взвод барьера при смене комнат
   useEffect(() => {
     setIsPositioning(true);
     isLockingNewMessages.current = true;
   }, [activeChatId]);
 
-
-
-  // 🏁 ЕДИНЫЙ СИНХРОНИЗИРОВАННЫЙ ЭФФЕКТ СКРОЛЛА
+  // =========================================================================
+  // 🎯 АВТОСКРОЛЛ И ПОЗИЦИОНИРОВАНИЕ ЧАТА (КЛАССИЧЕСКАЯ ПРЯМАЯ ВЕРСИЯ)
+  // =========================================================================
   useEffect(() => {
+    let animationFrameId = null;
+    let timerId = null;
+
     if (!messages || messages.length === 0) {
-      if (isPositioning) setIsPositioning(false);
+      if (lastProcessedChatId.current !== activeChatId) {
+        lastProcessedChatId.current = activeChatId;
+        setIsPositioning(false);
+      }
       return;
     }
-
-    // СЛУЧАЙ 1: Стартовое позиционирование при смене чата
+    // СЛУЧАЙ 1: Стартовое позиционирование при переключении чата
     if (lastProcessedChatId.current !== activeChatId) {
-      console.log("🔄 Лог: Сообщения для нового чата отрисовались. Позиционирую...");
+      console.log("🔄 Лог: Сообщения для нового чата отрисовались. Позиционирую в самый низ...");
       
       isUserScrolledUp.current = false;
       setShowScrollBtn(false);
       setUnreadCountWhileReading(0);
+      isLockingNewMessages.current = true; 
 
-      // Запрашиваем у браузера кадр анимации, чтобы дождаться перестроения DOM-структуры
-      requestAnimationFrame(() => {
-        // Микро-таймер на 60-80мс дает React время полностью наполнить контейнер сообщениями
-        const timer = setTimeout(() => {
+      animationFrameId = requestAnimationFrame(() => {
+        timerId = setTimeout(() => {
+          const container = scrollContainerRef.current;
           
-          // Проверяем наличие маркера на основе свежих данных
-        if (firstUnreadMsg && firstUnreadRef.current) {
-          console.log("🎯 Смарт-скролл: Прыгаю к МАРКЕРУ");
-          firstUnreadRef.current.scrollIntoView({ behavior: 'auto', block: 'center' });
-        } else {
-          console.log("🔽 Смарт-скролл: Прижимаю В САМЫЙ НИЗ (Запасной план)");
-          // Прямая манипуляция со скроллом, которая работает быстрее, чем scrollIntoView в React
-          if (scrollContainerRef.current) {
-            scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+          if (firstUnreadMsg && firstUnreadRef.current && !activeChatId.startsWith('channel_')) {
+            console.log("🎯 Смарт-скролл: Прыгаю к МАРКЕРУ непрочитанных");
+            firstUnreadRef.current.scrollIntoView({ behavior: 'auto', block: 'center' });
+          } else {
+            console.log("🔽 Смарт-скролл: Прижимаю В САМЫЙ НИЗ (Прямая лента)");
+            if (container) {
+              container.scrollTop = container.scrollHeight;
+            }
           }
-          messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-        }
-
-
           
+          setTimeout(() => {
+            if (scrollContainerRef.current) {
+              scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+            }
+          }, 30);
+
           lastProcessedChatId.current = activeChatId;
           setIsPositioning(false);
           
           setTimeout(() => {
             isLockingNewMessages.current = false;
-          }, 150);
-        }, 80); // 80мс — гарантированное окно для рендеринга тяжелой истории сообщений
-
-        return () => clearTimeout(timer);
+          }, 100);
+        }, 150);
       });
 
-      return;
+      return () => {
+        if (animationFrameId) cancelAnimationFrame(animationFrameId);
+        if (timerId) clearTimeout(timerId);
+      };
     }
 
     // СЛУЧАЙ 2: Динамический автоскролл при летящих сообщениях из сокетов
     if (!isPositioning && !isLockingNewMessages.current) {
-      const lastMsg = messages[messages.length - 1];
+      let dynamicScrollTimer = null;
+      const lastMsg = messages[messages.length - 1]; 
       const isLastMsgMe = Number(lastMsg?.senderId) === Number(currentUserId);
 
-      if (isLastMsgMe) {
-        isUserScrolledUp.current = false;
-        setShowScrollBtn(false);
-        setUnreadCountWhileReading(0);
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      if (isLastMsgMe || !isUserScrolledUp.current) {
+        dynamicScrollTimer = setTimeout(() => {
+          if (scrollContainerRef.current) {
+            scrollContainerRef.current.scrollTo({ 
+              top: scrollContainerRef.current.scrollHeight, 
+              behavior: 'smooth' 
+            });
+          }
         }, 30);
-      } else {
-        if (isUserScrolledUp.current) {
-          setUnreadCountWhileReading(prev => prev + 1);
-        } else {
-          setTimeout(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-          }, 30);
+      }
+
+      return () => {
+        if (dynamicScrollTimer) clearTimeout(dynamicScrollTimer);
+      };
+    }
+  }, [messages, activeChatId, isPositioning, currentUserId, firstUnreadMsg]);
+
+
+useEffect(() => {
+  const container = scrollContainerRef.current;
+  if (!container) return;
+  if (scrollMetrics.current.oldHeight === 0) {
+    setIsPositioning(false);
+    return;
+  }
+
+  let isApplied = false;
+  let checkCount = 0;
+  const maxChecks = SCROLL_CONFIG.MAX_CHECKS;;
+
+  const checkHeight = () => {
+    if (isApplied) return;
+    const currentHeight = container.scrollHeight;
+    const heightDifference = currentHeight - scrollMetrics.current.oldHeight;
+
+    if (heightDifference > 0) {
+      const targetScrollTop = scrollMetrics.current.oldTop + heightDifference;
+      container.scrollTop = targetScrollTop;
+
+      setTimeout(() => {
+        if (container && Math.abs(container.scrollTop - targetScrollTop) > 50) {
+          container.scrollTop = targetScrollTop;
         }
+      }, 50);
+
+      isApplied = true;
+      scrollMetrics.current.oldHeight = 0;
+      scrollMetrics.current.oldTop = 0;
+      setIsPositioning(false);
+      if (observerRef.current) observerRef.current.disconnect();
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    } else {
+      checkCount++;
+      if (checkCount >= maxChecks) {
+        scrollMetrics.current.oldHeight = 0;
+        scrollMetrics.current.oldTop = 0;
+        setIsPositioning(false);
+        if (observerRef.current) observerRef.current.disconnect();
+        if (intervalRef.current) clearInterval(intervalRef.current);
       }
     }
-  }, [messages, activeChatId, isPositioning]);
+  };
 
+  observerRef.current = new MutationObserver(() => checkHeight());
+  observerRef.current.observe(container, {
+    childList: true,
+    subtree: true,
+    attributes: false,
+    characterData: false
+  });
 
-  // 👀 ЭФФЕКТ ЧТЕНИЯ: Гасим плашку, когда пользователь до неё доскроллил
+  intervalRef.current = setInterval(checkHeight, 50);
+
+  const timeoutId = setTimeout(() => {
+    if (!isApplied) checkHeight();
+  }, 2000);
+
+  return () => {
+    if (observerRef.current) observerRef.current.disconnect();
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    clearTimeout(timeoutId);
+  };
+}, [messages]);
+  // =========================================================================
+  // 👀 ИСПРАВЛЕННЫЙ ЭФФЕКТ ЧТЕНИЯ (ЖЕСТКАЯ ИЗОЛЯЦИЯ ОТ ВНЕШНИХ MSG)
+  // =========================================================================
   useEffect(() => {
-    // Если плашки на экране нет — отключаем слежку и выходим
+    // Если непрочитанных сообщений нет — сразу отключаем обсервер
     if (!firstUnreadMsg) {
       if (readingObserver.current) readingObserver.current.disconnect();
       return;
     }
 
-    // Очищаем старый обсервер при переключениях
     if (readingObserver.current) readingObserver.current.disconnect();
 
-    // Создаем новый обсервер
     readingObserver.current = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
-        // Если маркер виден на экране более чем на 70% и чат уже отпозиционирован
-          
         if (entry.isIntersecting && !isPositioning) {
           console.log("👁️ Смарт-сенсор: Юзер увидел плашку непрочитанных!");
 
-          // 1. Отправляем сигнал на бэкенд через сокеты
           if (socketRef.current && socketRef.current.connected) {
             socketRef.current.emit('read_messages', { 
               activeChatId, 
-              currentUserId: currentUserId // 🔥 ИСПРАВЛЕНО: заменили user?.id на текущий рабочий currentUserId
+              currentUserId: currentUserId 
             });
           }
 
-          // 2. Локально отключаем обсервер
-          readingObserver.current.disconnect();
+          if (readingObserver.current) readingObserver.current.disconnect();
         }
-
       });
     }, { root: scrollContainerRef.current, threshold: 0.7 });
 
-    // Даем микропаузу 300мс, чтобы скролл завершился, и вешаем слежку строго на реф плашки
     const timer = setTimeout(() => {
       if (firstUnreadRef.current && readingObserver.current) {
         readingObserver.current.observe(firstUnreadRef.current);
@@ -213,48 +300,65 @@ export default function ChatArea({
       clearTimeout(timer);
       if (readingObserver.current) readingObserver.current.disconnect();
     };
-  }, [activeChatId, messages, isPositioning,currentUserId]); // Перезапускаем при изменении сообщений или чата
+  }, [activeChatId, messages, isPositioning, currentUserId, !!firstUnreadMsg]); 
 
 
-  // 🎛️ Обработчик прокрутки ленты
-    const handleScroll = () => {
-    if (!scrollContainerRef.current) return;
+// 🎛️ НАТИВНЫЙ ОБРАБОТЧИК ПРОКРУТКИ
+const handleScroll = (e) => {
+  const container = e.currentTarget || scrollContainerRef.current;
+  if (!container) return;
 
-    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+  const { scrollTop, scrollHeight, clientHeight } = container;
 
-    // Если пользователь поднялся выше 200px от дна чата
-    if (distanceFromBottom > 200) {
-      isUserScrolledUp.current = true;
-      setShowScrollBtn(true);
-    } else {
-      isUserScrolledUp.current = false;
-      setShowScrollBtn(false);
-      setUnreadCountWhileReading(0);
-    }
-  };
-
-  // Плавный скролл вниз по клику на кнопку
-  const scrollToBottomSmooth = () => {
+  // 1. Управление плавающей кнопкой "Вниз"
+  const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+  if (distanceFromBottom > 200) {
+    isUserScrolledUp.current = true;
+    setShowScrollBtn(true);
+  } else {
     isUserScrolledUp.current = false;
     setShowScrollBtn(false);
     setUnreadCountWhileReading(0);
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }
 
-
-  /*----------------------------------------------------------------------------------------*-*/
-
+  // 2. 🛡️ Детектор ВЕРХА с БЛОКИРОВКОЙ
+  if (
+    scrollTop < 40 && 
+    !isPositioning && 
+    !isHistoryLoading && 
+    hasMoreHistory && 
+    scrollHeight > clientHeight &&
+    scrollMetrics.current.oldHeight === 0 // Не запускаем, если уже есть метрики
+  ) {
+    console.log(`▲ Нативный скролл: Достигнут ВЕРХ. scrollTop=${scrollTop}, scrollHeight=${scrollHeight}`);
+    
+    if (typeof onLoadMoreHistory === 'function') {
+      // Сохраняем метрики ДО загрузки
+      scrollMetrics.current.oldHeight = scrollHeight;
+      scrollMetrics.current.oldTop = scrollTop;
+      console.log(`📝 Сохраняю метрики: oldHeight=${scrollHeight}, oldTop=${scrollTop}`);
+      
+      // Блокируем повторные вызовы
+      setIsPositioning(true);
+      
+      // Вызываем загрузку
+      onLoadMoreHistory();
+    }
+  }
+};
+  // Таймер записи аудиосообщений
   useEffect(() => {
     if (isRecording) {
       timerRef.current = setInterval(() => {
         setRecordingTime(prev => prev + 1);
       }, 1000);
     } else {
-      clearInterval(timerRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
       setRecordingTime(0);
     }
-    return () => clearInterval(timerRef.current);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, [isRecording]);
 
   const handleContextMenu = (e, msgId) => {
@@ -266,8 +370,9 @@ export default function ChatArea({
     if (text) navigator.clipboard.writeText(text);
   };
 
-       const handleFileChange = async (e) => {
-    const file = e.target.files[0]; // Исправлено: берем первый файл из массива
+  // Выгрузка картинок через Multer
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0]; 
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
@@ -279,43 +384,43 @@ export default function ChatArea({
     formData.append('file', file);
 
     try {
-      const response = await fetch('http://localhost:5001/api/upload', {
+      const token = localStorage.getItem('token');
+      const serverUrl = activeChatData?.apiBaseUrl || apiBaseUrl || API_BASE_URL
+
+      const response = await fetch(`${serverUrl}/api/upload`, {
         method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
       });
 
       if (!response.ok) throw new Error('Ошибка при загрузке файла');
       
       const data = await response.json();
-      console.log('📦 Ответ сервера на загрузку картинки:', data);
-      
-      // Бэкенд возвращает fileUrl! Берем его напрямую
-      const finalUrl = data.fileUrl;
+      const relativeUrl = data.fileUrl;
+      if (!relativeUrl) throw new Error('Бэкенд не вернул путь к файлу');
 
-      if (!finalUrl) {
-        throw new Error('Бэкенд не вернул fileUrl');
-      }
-      
-      // Отправляем ОДИН раз через проп
-      if (typeof onSendImage === 'function') {
-        onSendImage(finalUrl); 
-      }
+      const finalUrl = relativeUrl.startsWith('http') ? relativeUrl : `${serverUrl}${relativeUrl}`;
+      if (typeof onSendImage === 'function') onSendImage(finalUrl); 
 
     } catch (error) {
       console.error('Ошибка загрузки медиа через Multer:', error);
       alert('Не удалось отправить изображение');
     }
-
-    e.target.value = ''; // Сбрасываем инпут
+    e.target.value = '';
   };
-
-
-
-
-    const startRecording = async () => {
+  // Запись аудиосообщений
+  const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorderRef.current = new MediaRecorder(stream);
+      
+      let options = { mimeType: 'audio/webm' };
+      if (MediaRecorder.isTypeSupported('audio/aac')) {
+        options = { mimeType: 'audio/aac' };
+      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        options = { mimeType: 'audio/mp4' };
+      }
+
+      mediaRecorderRef.current = new MediaRecorder(stream, options);
       audioChunksRef.current = [];
       
       mediaRecorderRef.current.ondataavailable = (event) => {
@@ -323,41 +428,38 @@ export default function ChatArea({
       };
 
       mediaRecorderRef.current.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const mimeType = mediaRecorderRef.current.mimeType;
+        const ext = mimeType.includes('aac') ? 'aac' : mimeType.includes('mp4') ? 'mp4' : 'webm';
         
-        //  Переводим Blob в файл для Multer
-        const audioFile = new File([audioBlob], 'voice.webm', { type: 'audio/webm' });
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+        const audioFile = new File([audioBlob], `voice.${ext}`, { type: mimeType });
+        
         const formData = new FormData();
         formData.append('file', audioFile);
 
-                try {
-          const response = await fetch('http://localhost:5001/api/upload', {
+        try {
+          const token = localStorage.getItem('token');
+          const serverUrl = activeChatData?.apiBaseUrl || apiBaseUrl || API_BASE_URL; 
+
+          const response = await fetch(`${serverUrl}/api/upload`, {
             method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` },
             body: formData,
           });
 
           if (!response.ok) throw new Error('Ошибка при загрузке аудио');
           
-          // Делаем имя переменной уникальным для этой функции, используя const
           const audioResponseData = await response.json();
-          console.log('📦 Ответ сервера на загрузку аудио:', audioResponseData);
-        
-          // Бэкенд возвращает fileUrl
-          const finalAudioUrl = audioResponseData.fileUrl;
+          const relativeAudioUrl = audioResponseData.fileUrl;
+          if (!relativeAudioUrl) throw new Error('Бэкенд не вернул путь к файлу для аудио');
 
-          if (!finalAudioUrl) {
-            throw new Error('Бэкенд не вернул fileUrl для аудио');
-          }
+          const finalAudioUrl = relativeAudioUrl.startsWith('http') ? relativeAudioUrl : `${serverUrl}${relativeAudioUrl}`;
+          if (typeof onSendAudio === 'function') onSendAudio(finalAudioUrl);
 
-          if (typeof onSendAudio === 'function') {
-            onSendAudio(finalAudioUrl);
-          }
         } catch (uploadError) {
           console.error('Ошибка сохранения аудио на сервере:', uploadError);
           alert('Не удалось отправить голосовое сообщение');
         }
-
-        // Выключаем микрофон, чтобы иконка записи в браузере погасла
         stream.getTracks().forEach(track => track.stop());
       };
 
@@ -367,7 +469,6 @@ export default function ChatArea({
       alert('Микрофон недоступен: ' + err.message);
     }
   };
-
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
@@ -381,20 +482,17 @@ export default function ChatArea({
     const remainingSecs = secs % 60;
     return `${mins}:${remainingSecs.toString().padStart(2, '0')}`;
   };
-  // Безопасное каскадное получение данных: сначала из нового activeChatData, затем из старого activeChat
-  const chatName = activeChatData?.name || activeChat?.name || (activeChatId === 'chat_general' ? 'Общий чат' : 'Загрузка...');
+
+    // 🛡️ [ТОТАЛЬНЫЙ БЛОКИРАТОР REFERENCEERROR]
+
   const chatAvatar = activeChatData?.avatar || activeChat?.avatar || (activeChatId === 'chat_general' ? '💬' : '👤');
   const isDataLoading = !activeChatData && !activeChat && activeChatId !== 'chat_general';
 
-
-    // Вычисляем статус печатания для текущего активного окна на основе веб-сокетов
   const isCurrentChatTyping = typingUser && (
     (typingUser.isGeneral && activeChatId === 'chat_general' && Number(typingUser.senderId) !== Number(currentUserId)) ||
     (!typingUser.isGeneral && activeChatId?.toString().replace('user_', '') === typingUser.senderId?.toString())
   );
 
-
-  // 2. Функция форматирования времени сообщений
   const formatMsgTime = (dateString) => {
     if (!dateString) return '';
     try {
@@ -405,151 +503,204 @@ export default function ChatArea({
     }
   };
 
-
+  const correctChatName = (() => {
+    if (activeChatId === 'chat_general') return 'Общий чат';
+    if (activeChatData?.name) return activeChatData.name;
+    
+    if (activeChatId?.startsWith('channel_')) {
+      const channelNumId = activeChatId.replace('channel_', '');
+      return `Публичный канал #${channelNumId}`;
+    }
+    
+    if (activeChatId?.startsWith('user_')) {
+      const userNumId = activeChatId.replace('user_', '');
+      return `Пользователь #${userNumId}`;
+    }
+    return 'Чат';
+  })();
   return (
-    <div className={`flex-col flex-1 h-full bg-zinc-900/30 ${activeChatId ? 'flex' : 'hidden md:flex'}`}>
+    <div className={`flex-col flex-1 h-full bg-zinc-100 dark:bg-zinc-900 ${activeChatId ? 'flex' : 'hidden md:flex'}`}>
       {!activeChatId ? (
         <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 p-4 text-center">
           <span className="text-4xl mb-2">💬</span>
           <p className="text-sm">Выберите чат, чтобы начать общение</p>
         </div>
       ) : (
-        <div className="flex flex-col h-full relative">
+       <div className="flex flex-col h-full relative">
           
-          {/* Шапка чата */}
-          <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-zinc-950/40">
+          {/* 1. ШАПКА ЧАТА (ОБЯЗАНА СТОЯТЬ ПЕРВОЙ НАВЕРХУ) */}
+          <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between bg-zinc-50 dark:bg-zinc-950/40">
             <div className="flex items-center flex-1 cursor-pointer select-none group" onClick={onToggleProfile}>
-              <button onClick={(e) => { e.stopPropagation(); setActiveChatId(null); }} className="md:hidden mr-3 p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition">
-                <span className="text-xl">🔙</span>
+              <button 
+                onClick={(e) => { e.stopPropagation(); setActiveChatId(null); }} 
+                className="md:hidden mr-3 p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition text-zinc-500 dark:text-zinc-400"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                </svg>
               </button>
               
-              {/* Аватарка с защитой от залипания */}
               <div className="w-10 h-10 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-lg mr-3 shadow-inner group-hover:scale-105 transition-transform duration-200">
                 {chatAvatar}
               </div>
               
-               <div>
-                {/* Имя чата / собеседника */}
-                <h2 className={`font-semibold text-sm transition-colors ${isDataLoading ? 'text-zinc-500 italic' : 'text-zinc-800 dark:text-white group-hover:text-emerald-500'}`}>
-                  {chatName}
+   <div>
+                <h2 className="font-semibold text-sm text-zinc-800 dark:text-white group-hover:text-emerald-500 transition-colors">
+                  {correctChatName}
                 </h2>
                 
-                {/* Статус */}
+                {/* 🛡️ РЕАКТИВНЫЙ СТАТУС В ЗАВИСИМОСТИ ОТ ТИПА КОМНАТЫ */}
                 <span className="text-xs transition-colors duration-300">
                   {isDataLoading ? (
                     <span className="text-zinc-500 dark:text-zinc-600 animate-pulse">поиск в базе...</span>
-                  ) : isCurrentChatTyping ? ( // 🔥 Заменили на исправленную переменную сокетов
+                  ) : isCurrentChatTyping ? ( 
                     <span className="text-emerald-500 dark:text-emerald-400 animate-pulse">печатает...</span>
                   ) : (
-                    <span className="text-zinc-400 dark:text-zinc-500">
-                      {activeChatData?.type === 'channel' || activeChatId === 'chat_general' ? 'канал' : 'онлайн'}
-                    </span>
+                    <>
+                      {activeChatId === 'chat_general' ? (
+                        <span className="text-zinc-400 dark:text-zinc-500">общий чат</span>
+                      ) : activeChatId?.startsWith('channel_') || activeChatData?.type === 'channel' ? (
+                        <span className="text-zinc-400 dark:text-zinc-500">канал</span>
+                      ) : activeChatData?.isOnline || activeChat?.isOnline ? (
+                        <span className="text-emerald-500 dark:text-emerald-400 font-medium">в сети</span>
+                      ) : (
+                        <span className="text-zinc-400 dark:text-zinc-500">был(а) недавно</span>
+                      )}
+                    </>
+
                   )}
                 </span>
               </div>
             </div>
-            <button onClick={onToggleProfile} disabled={isDataLoading} className="p-2 text-zinc-400 dark:text-zinc-500 hover:text-zinc-800 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition disabled:opacity-30">
+            
+            <button 
+              onClick={onToggleProfile} 
+              className="p-2 text-zinc-400 dark:text-zinc-500 hover:text-zinc-800 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition"
+            >
               ℹ️
             </button>
-                  </div>
-                    {/* Лента сообщений с Anti-Flicker барьером и отслеживанием скролла */}
+          </div>
+
+          {/* 2. ЛЕНТА СООБЩЕНИЙ (ИДЁТ СТРОГО ПОД ШАПКОЙ) */}
           <div 
-  ref={scrollContainerRef}
-  onScroll={handleScroll}
-  /* scroll-behavior: auto отключает плавность, чтобы прыжок был мгновенным и незаметным под opacity-0 */
-  style={{ scrollBehavior: isPositioning ? 'auto' : 'smooth' }}
-  className={`flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar bg-zinc-950/20 transition-opacity duration-150 ${
-    isPositioning ? 'opacity-0 invisible' : 'opacity-100 visible'
-  }`}
->
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+            className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar bg-white dark:bg-zinc-950/20"
+          >
+  
 
-            {(messages || []).map(msg => {
-              const isMe = Number(msg.senderId) === Number(currentUserId);
-              const formattedTime = formatMsgTime(msg.createdAt);
-              const isTargetUnread = firstUnreadMsg && msg.id === firstUnreadMsg.id;
 
-              return (
-                <React.Fragment key={msg.id}>
-                  {/* JSX-Разделитель «Smart Anchor» перед первым непрочитанным */}
-                  {isTargetUnread && (
-                    <div ref={firstUnreadRef} className="w-full flex items-center justify-center my-4 select-none">
-                      <div className="h-[1px] bg-red-500/30 flex-1"></div>
-                      <span className="bg-red-500/10 text-red-500 text-[11px] font-semibold px-3 py-1 rounded-full border border-red-500/20 mx-3 animate-pulse">
-                        ⛔ Непрочитанные сообщения
-                      </span>
-                      <div className="h-[1px] bg-red-500/30 flex-1"></div>
-                    </div>
-                  )}
+            {/* ⏳ СЕНСОР ИСТОРИИ (Вверху прямой ленты) */}
+            <div ref={topSensorRef} className="h-1 w-full flex items-center justify-center text-xs text-zinc-500/50">
+              {isHistoryLoading ? '⏳ Загрузка истории...' : ''}
+            </div>
 
-                  <div className={`flex ${isMe ? 'justify-end' : 'justify-start'}`} onContextMenu={(e) => handleContextMenu(e, msg.id)}>
-                    <div className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-sm shadow-sm flex flex-col gap-0.5 relative group ${
-                      msg.isDeleted 
-                        ? 'bg-zinc-200/50 dark:bg-zinc-800/30 text-zinc-400 dark:text-zinc-500 italic border border-zinc-300/50 dark:border-zinc-800/50' 
-                        : isMe ? 'bg-emerald-600 text-white rounded-br-none' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-none'
-                    } ${msg.mediaType === 'image' && !msg.isDeleted ? 'p-1 bg-zinc-100 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800' : ''} ${msg.mediaType === 'audio' && !msg.isDeleted ? 'w-64 p-3' : ''}`}>
-                      
-                     {msg.isDeleted ? (
-                        <p className="leading-relaxed text-xs">Сообщение удалено</p>
-                     ) : msg.mediaType === 'image' && msg.mediaUrl ? (
-                        <div className="flex flex-col gap-1">
-                          <img src={msg.mediaUrl} alt="Изображение" className="rounded-xl max-h-60 object-contain bg-zinc-950/20" />
-                          <div className="flex items-center justify-end gap-1 px-1.5 pb-0.5">
-                            <span className="text-[9px] text-zinc-400">{formattedTime}</span>
-                            {isMe && (
-                              <span className="text-[10px] leading-none select-none">
-                                {msg.status === 'read' || activeChatId === 'chat_general' || activeChatId?.startsWith('channel_') ? (
-                                  <span className="text-sky-300 font-bold">✓✓</span>
-                                ) : (
-                                  <span className="text-white/40">✓</span>
-                                )}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                     ) : msg.mediaType === 'audio' && msg.mediaUrl ? (
-                        <div className="flex flex-col gap-1.5 w-full">
-                          <div className="flex items-center gap-2">
-                            <span className="text-base select-none">🎙️</span>
-                            <audio src={msg.mediaUrl} controls className="w-full h-8 custom-audio-player filter dark:invert" />
-                          </div>
-                          <div className="flex items-center justify-end gap-1 self-end">
-                            <span className={`text-[9px] ${isMe ? 'text-white/60' : 'text-zinc-400 dark:text-zinc-500'}`}>{formattedTime}</span>
-                            {isMe && (
-                              <span className="text-[10px] leading-none select-none">
-                                {msg.status === 'read' || activeChatId === 'chat_general' || activeChatId?.startsWith('channel_') ? (
-                                  <span className="text-sky-300 font-bold">✓✓</span>
-                                ) : (
-                                  <span className="text-white/40">✓</span>
-                                )}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                     ) : (
-                        <>
-                          <p className="leading-relaxed break-words  whitespace-pre-wrap">{msg.text || msg.content}</p>
-                          <div className="flex items-center justify-end gap-1 self-end">
-                            <span className={`text-[9px] ${isMe ? 'text-white/60' : 'text-zinc-400 dark:text-zinc-500'}`}>{formattedTime}</span>
-                            {isMe && (
-                              <span className="text-[10px] leading-none select-none">
-                                {msg.status === 'read' || activeChatId === 'chat_general' || activeChatId?.startsWith('channel_') ? (
-                                  <span className="text-sky-300 font-bold">✓✓</span>
-                                ) : (
-                                  <span className="text-white/40">✓</span>
-                                )}
-                              </span>
-                            )}
-                          </div>
-                        </>
-                     )}
-                    </div>
-                  </div>
-                </React.Fragment>
-              );
-            })}
+{/* 💬 РЕНДЕР СООБЩЕНИЙ С ПОЛНОЙ ФУНКЦИОНАЛЬНОСТЬЮ */}
+{Array.isArray(messages) && messages
+  .filter(m => {
+    if (!m) return false;
+    const stringChatId = activeChatId.toString();
+
+    if (stringChatId === 'chat_general') {
+      return !m.receiverId && !m.channelId;
+    }
+
+    if (stringChatId.startsWith('channel_')) {
+      const channelNumId = Number(stringChatId.replace('channel_', ''));
+      return Number(m.channelId) === channelNumId;
+    }
+
+    if (stringChatId.startsWith('user_')) {
+      const targetUserId = Number(stringChatId.replace('user_', ''));
+      const myId = currentUserId ? Number(currentUserId) : null;
+      
+      return !m.channelId && (
+        (Number(m.senderId) === myId && Number(m.receiverId) === targetUserId) ||
+        (Number(m.senderId) === targetUserId && Number(m.receiverId) === myId)
+      );
+    }
+    return false;
+  })
+  .map((msg, index) => {
+    // Вытаскиваем все возможные ключи медиафайлов
+    const currentFileUrl = msg.fileUrl || msg.imageUrl || msg.mediaUrl || msg.image || '';
+    const currentAudioUrl = msg.audioUrl || msg.voiceUrl || msg.audio || '';
+    const currentText = msg.text || msg.content || msg.message || '';
+
+    // Проверяем, является ли файл аудиозаписью
+  const isAudioFile = 
+    currentAudioUrl !== '' ||
+    MEDIA_TYPES.AUDIO.some(ext => currentFileUrl.toLowerCase().endsWith(ext)) ||
+    currentText.includes('Голосовое сообщение');
+
+    const isOwn = Number(msg.senderId) === Number(currentUserId);
+
+    return (
+      <div 
+        key={msg.id || msg._id || `msg-${index}-${Math.random()}`}
+        className={`flex w-full mb-2 ${isOwn ? 'justify-end' : 'justify-start'}`}
+      >
+        <div 
+          className={`max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative group text-sm ${
+            isOwn
+              ? 'bg-emerald-600 text-white rounded-br-none'
+              : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-none border border-zinc-200/60 dark:border-transparent'
+          }`}
+          onContextMenu={(e) => handleContextMenu(e, msg.id)}
+        >
+          {/* 🖼️ ВЫВОД КАРТИНКИ */}
+          {currentFileUrl && !isAudioFile && (
+            <div className="mb-2 max-w-full overflow-hidden rounded-lg bg-zinc-900/50">
+              <img 
+                src={currentFileUrl} 
+                alt="Вложение" 
+                className="max-h-60 w-full object-cover cursor-pointer hover:opacity-90 transition"
+              />
+            </div>
+          )}
+
+          {/* 🎙️ ВЫВОД АУДИОПЛЕЕРА */}
+          {isAudioFile && (
+            <div className="mb-2 p-1 bg-zinc-100/80 dark:bg-zinc-950/60 rounded-xl flex items-center gap-2 min-w-[240px] border border-zinc-200 dark:border-zinc-800/50">
+              <audio 
+                src={currentAudioUrl || currentFileUrl} 
+                controls 
+                className="w-full h-8 accent-emerald-500" 
+              />
+            </div>
+          )}
+
+          {/* 💬 ТЕКСТ СООБЩЕНИЯ */}
+          {currentText && !currentText.includes('Голосовое сообщение') && (
+            <p className="break-words whitespace-pre-wrap">{currentText}</p>
+          )}
+          
+          {/* 🕒 ВРЕМЯ И ГАЛОЧКИ СТАТУСА */}
+          <div className={`text-[10px] font-normal flex items-center justify-end gap-1 mt-1 select-none ${
+            isOwn
+              ? 'text-emerald-100/90' 
+              : 'text-zinc-400 dark:text-zinc-500' 
+          }`}>
+            <span>{msg.createdAt ? formatMsgTime(msg.createdAt) : ''}</span>
             
+            {isOwn && (
+              <span className="text-xs font-bold leading-none">
+                {msg.status === 'read' || msg.isRead === true ? (
+                  <span className="text-cyan-200 dark:text-cyan-400">✓✓</span>
+                ) : (
+                  <span className="text-emerald-200/60">✓</span>
+                )}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  })
+}
+            {/* Анимация "печатает..." */}
             {isTyping && (
-              <div className="flex justify-start mb-2">
+              <div className="flex justify-start mb-2 w-full">
                 <div className="bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-2xl rounded-bl-none px-4 py-2.5 shadow-sm flex items-center gap-1">
                   <span className="w-1.5 h-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
                   <span className="w-1.5 h-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
@@ -557,10 +708,12 @@ export default function ChatArea({
                 </div>
               </div>
             )}
-            <div ref={messagesEndRef} />
+
+            {/* 🎯 МАРКЕР НИЗА (В самом конце списка прямой ленты) */}
+            <div ref={messagesEndRef} className="h-0 w-full" />
           </div>
 
-          {/* Плавающая Telegram-кнопка «Вниз» с локальным счетчиком */}
+          {/* Плавающая кнопка «Вниз» */}
           {showScrollBtn && (
             <button 
               type="button"
@@ -576,15 +729,18 @@ export default function ChatArea({
             </button>
           )}
 
-         {/* Панель ввода с динамической проверкой прав администратора */}
+          {/* Панель ввода сообщений */}
           {activeChatId && activeChatId.startsWith('channel_') && 
            (activeChatData?.creatorId !== Number(currentUserId) && activeChat?.creatorId !== Number(currentUserId)) ? (
-            /* Глухая, красивая плашка во всю ширину для обычных подписчиков канала */
-            <div className="p-5 bg-zinc-100 dark:bg-zinc-950/60 border-t border-zinc-200 dark:border-zinc-800 text-center text-sm font-medium tracking-wide text-zinc-400 dark:text-zinc-500 rounded-b-xl flex items-center justify-center gap-2 select-none">
+            <div className="p-5 bg-zinc-100 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 text-center text-sm font-medium tracking-wide text-zinc-400 dark:text-zinc-500 flex items-center justify-center gap-2 select-none">
               📢 Только администраторы могут оставлять сообщения
             </div>
           ) : (
-            <form onSubmit={handleSendMessage} className="p-4 bg-zinc-50 dark:bg-zinc-950/40 border-t border-zinc-200 dark:border-zinc-800 flex gap-2 items-center">
+            <form onSubmit={(e) => { 
+              handleSendMessage(e); 
+              const textarea = e.target.querySelector('textarea');
+              if (textarea) textarea.style.height = '40px';
+            }} className="p-4 bg-zinc-50 dark:bg-zinc-950/40 border-t border-zinc-200 dark:border-zinc-800 flex gap-2 items-center">
               <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
               {!isRecording && (
                 <button type="button" onClick={() => fileInputRef.current.click()} className="p-2 text-zinc-400 hover:text-emerald-500 rounded-xl transition active:scale-95">📎</button>
@@ -599,27 +755,35 @@ export default function ChatArea({
                   <span>{formatTime(recordingTime)}</span>
                 </div>
               ) : (
-     <textarea 
-  value={inputValue} 
-  onChange={(e) => {
-    setInputValue(e.target.value);
-    if (socketRef && socketRef.current) {
-      socketRef.current.emit('typing', { activeChatId, senderId: currentUserId });
-    }
-  }} 
-  onKeyDown={(e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault(); 
-      handleSendMessage(e); 
-    }
-  }}
-  placeholder="Напишите сообщение..." 
-  autoComplete="off" 
-  rows={1}
-  className="flex-1 bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200/60 dark:border-zinc-700/50 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-emerald-500 transition text-zinc-800 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-500 resize-none min-h-[40px] max-h-[120px] no-scrollbar py-2" 
-/> 
+                <textarea 
+                  value={inputValue} 
+                  onChange={(e) => {
+                    setInputValue(e.target.value);
+                    e.target.style.height = '40px';
+                    e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
 
-
+                    if (socketRef && socketRef.current && !isTypingEmittedRef.current) {
+                      isTypingEmittedRef.current = true;
+                      socketRef.current.emit('typing', { activeChatId });
+                      
+                      setTimeout(() => {
+                        isTypingEmittedRef.current = false;
+                        if (socketRef.current) socketRef.current.emit('stop_typing', { activeChatId });
+                      }, 1500);
+                    }
+                  }} 
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault(); 
+                      handleSendMessage(e); 
+                      e.target.style.height = '40px';
+                    }
+                  }}
+                  placeholder="Напишите сообщение..." 
+                  autoComplete="off" 
+                  rows={1}
+                  className="flex-1 bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200/60 dark:border-zinc-700/50 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-emerald-500 transition text-zinc-800 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-500 resize-none min-h-[40px] max-h-[120px] no-scrollbar py-2" 
+                />
               )}
 
               {inputValue.trim() === '' ? (
@@ -632,32 +796,48 @@ export default function ChatArea({
             </form>
           )}
 
-          {/* Индикатор печатания с прыгающими точками */}
-          {typingUser && (
-            ((typingUser.isGeneral && activeChatId === 'chat_general' && Number(typingUser.id) !== Number(currentUserId)) ||
-            (!typingUser.isGeneral && activeChatId === `user_${typingUser.id}`))
-          ) && (
-            <div className="px-4 py-2 text-xs text-zinc-400 italic flex items-center gap-1.5 animate-pulse">
-              <span>Собеседник печатает</span>
-              <div className="flex gap-1">
-                <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce"></span>
-                <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.2s]"></span>
-                <span className="w-1 h-1 bg-zinc-400 rounded-full animate-bounce [animation-delay:0.4s]"></span>
-              </div>
-            </div>
-          )}
+          {/* Контекстное меню (ИСПРАВЛЕННАЯ СТАБИЛЬНАЯ ВЕРСИЯ БЕЗ СЛУЧАЙНЫХ MSG) */}
+          {contextMenu.visible && (() => {
+            const currentMsg = messages?.find(m => m && (m.id === contextMenu.msgId || m._id === contextMenu.msgId));
+            if (!currentMsg) return null;
 
-          {/* Исправленное контекстное меню без обращений к activeChat.messages */}
-          {contextMenu.visible && (
-            <div className="fixed bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700/80 py-1 w-36 rounded-xl shadow-2xl z-50 text-xs text-zinc-700 dark:text-zinc-200 overflow-hidden" style={{ top: contextMenu.y, left: contextMenu.x }}>
-              {messages && !messages.find(m => m.id === contextMenu.msgId)?.isDeleted && 
-               messages.find(m => m.id === contextMenu.msgId)?.mediaType !== 'image' && 
-               messages.find(m => m.id === contextMenu.msgId)?.mediaType !== 'audio' && (
-                <button onClick={() => handleCopy(messages.find(m => m.id === contextMenu.msgId)?.text)} className="w-full text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-2">📋 Копировать</button>
-              )}
-              <button onClick={() => { onDeleteMessage(contextMenu.msgId); setContextMenu({ visible: false, x: 0, y: 0, msgId: null }); }} className="w-full text-left px-3 py-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 dark:text-red-400 transition flex items-center gap-2 font-medium border-t border-zinc-100 dark:border-zinc-700/30">🗑️ Удалить у всех</button>
-            </div>
-          )}
+            const isMsgMe = Number(currentMsg.senderId) === Number(currentUserId);
+            const isChannelCreator = activeChatData?.type === 'channel' && activeChatData?.creatorId === Number(currentUserId);
+            const canDelete = isMsgMe || isChannelCreator;
+            const textToCopy = currentMsg.text || currentMsg.content || currentMsg.message || '';
+
+            return (
+              <div 
+                className="fixed bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700/80 py-1 w-40 rounded-xl shadow-2xl z-50 text-xs text-zinc-700 dark:text-zinc-200 overflow-hidden" 
+                style={{ top: contextMenu.y, left: contextMenu.x }}
+              >
+                {!currentMsg.isDeleted && textToCopy !== '' && (
+                  <button 
+                    onClick={() => {
+                      handleCopy(textToCopy);
+                      setContextMenu({ visible: false, x: 0, y: 0, msgId: null });
+                    }} 
+                    className="w-full text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-2"
+                  >
+                    📋 Копировать текст
+                  </button>
+                )}
+                
+                {canDelete && (
+                  <button 
+                    onClick={() => { 
+                      onDeleteMessage(contextMenu.msgId); 
+                      setContextMenu({ visible: false, x: 0, y: 0, msgId: null }); 
+                    }} 
+                    className="w-full text-left px-3 py-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 dark:text-red-400 transition flex items-center gap-2 font-medium border-t border-zinc-100 dark:border-zinc-700/30"
+                  >
+                    🗑️ Удалить сообщение
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+
 
         </div>
       )}
