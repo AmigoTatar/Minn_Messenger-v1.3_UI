@@ -1,40 +1,209 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 export default function ProfilePanel({ activeChat, isOpen, onClose }) {
-  // Стейт для вкладок: 'media' или 'audio'
   const [activeTab, setActiveTab] = useState('media');
+  const [members, setMembers] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [showAddMember, setShowAddMember] = useState(false);
+  const [allUsers, setAllUsers] = useState([]);
+  const [selectedUserId, setSelectedUserId] = useState('');
+
+  // Получаем участников канала
+useEffect(() => {
+  if (!isOpen || !activeChat || activeChat.type !== 'channel') return;
+  
+  console.log('📋 activeChat в ProfilePanel:', activeChat); // ← ДОБАВЬ ЛОГ
+  
+  const fetchMembers = async () => {
+    setIsLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      // Извлекаем ID из activeChat.id (уже должно быть 'channel_8')
+      const channelId = activeChat.id.replace('channel_', '');
+      
+      console.log(`📡 Запрос участников для канала ${channelId}`);
+      
+      const response = await fetch(`http://localhost:5001/api/channels/${channelId}/members`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ Ответ сервера:', response.status, errorText);
+        throw new Error('Ошибка загрузки участников');
+      }
+      
+      const data = await response.json();
+      console.log('✅ Участники загружены:', data);
+      setMembers(data);
+      
+    } catch (error) {
+      console.error('Ошибка получения участников:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  fetchMembers();
+}, [isOpen, activeChat]);
+
+  // Получаем всех пользователей для добавления
+  useEffect(() => {
+    if (!showAddMember) return;
+    
+    const fetchUsers = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch('http://localhost:5001/api/users', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (!response.ok) throw new Error('Ошибка загрузки пользователей');
+        
+        const data = await response.json();
+        // Фильтруем тех, кто уже в канале
+        const memberIds = members.map(m => m.userId);
+        setAllUsers(data.filter(u => !memberIds.includes(u.dbId || u.id)));
+      } catch (error) {
+        console.error('Ошибка получения пользователей:', error);
+      }
+    };
+
+    fetchUsers();
+  }, [showAddMember, members]);
+
+  // Добавить участника
+  const handleAddMember = async () => {
+    if (!selectedUserId) return;
+    
+    try {
+      const token = localStorage.getItem('token');
+      const channelId = activeChat.id.replace('channel_', '');
+      
+      const response = await fetch(`http://localhost:5001/api/channels/${channelId}/members`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ userId: parseInt(selectedUserId) })
+      });
+      
+      if (!response.ok) throw new Error('Ошибка добавления участника');
+      
+      // Обновляем список участников
+      const newMember = await response.json();
+      setMembers([...members, newMember]);
+      setShowAddMember(false);
+      setSelectedUserId('');
+    } catch (error) {
+      console.error('Ошибка добавления участника:', error);
+      alert('Не удалось добавить участника');
+    }
+  };
+
+  // Удалить участника
+  const handleRemoveMember = async (userId) => {
+    if (!confirm('Удалить участника из канала?')) return;
+    
+    try {
+      const token = localStorage.getItem('token');
+      const channelId = activeChat.id.replace('channel_', '');
+      
+      const response = await fetch(`http://localhost:5001/api/channels/${channelId}/members/${userId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (!response.ok) throw new Error('Ошибка удаления участника');
+      
+      setMembers(members.filter(m => m.userId !== userId));
+    } catch (error) {
+      console.error('Ошибка удаления участника:', error);
+      alert('Не удалось удалить участника');
+    }
+  };
 
   if (!isOpen || !activeChat) return null;
 
-  // Безопасно берем массив сообщений
-const messages = activeChat?.messages || [];
+  const messages = activeChat?.messages || [];
+  const mediaImages = messages.filter(msg => msg && msg.mediaType === 'image' && !msg.isDeleted);
+  const audioFiles = messages.filter(msg => msg && msg.mediaType === 'audio' && !msg.isDeleted);
+  
+  // Проверяем, является ли пользователь админом канала
+  const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+  const isAdmin = members.some(m => m.userId === currentUserId && m.role === 'admin');
+  const isCreator = activeChat.creatorId === currentUserId; 
 
-// Фильтруем картинки по полям твоей базы данных
-const mediaImages = messages.filter(msg => msg && msg.mediaType === 'image' && !msg.isDeleted);
 
-// Фильтруем аудиосообщения по полям твоей базы данных
-const audioFiles = messages.filter(msg => msg && msg.mediaType === 'audio' && !msg.isDeleted);
+ // ✅ ДОБАВЛЯЕМ ОТЛАДОЧНЫЕ ЛОГИ
+  console.log('🔍 ProfilePanel DEBUG:', {
+    activeChatType: activeChat?.type,
+    activeChatId: activeChat?.id,
+    creatorId: activeChat?.creatorId,
+    currentUserId: currentUserId,
+    isCreator: isCreator,
+    isAdmin: isAdmin,
+    membersCount: members.length,
+    showDeleteButton: activeChat?.type === 'channel' && isCreator
+  });
 
-
-
-  // Функция плавного скролла к сообщению по клику на миниатюру
   const handleMediaClick = (messageId) => {
     const element = document.getElementById(`msg-${messageId}`);
     if (element) {
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      
-      // Красивая подсветка при скролле
       element.classList.add('highlight-animation');
       setTimeout(() => element.classList.remove('highlight-animation'), 2000);
-    } else {
-      console.warn(`Сообщение msg-${messageId} не найдено в зоне видимости чата`);
     }
   };
+
+
+ // Удалить канал
+// Удалить канал
+const handleDeleteChannel = async () => {
+  if (!confirm(`Вы уверены, что хотите удалить канал "${activeChat?.name}"? Это действие необратимо!`)) {
+    return;
+  }
+
+  try {
+    const token = localStorage.getItem('token');
+    const channelId = activeChat.id.replace('channel_', '');
+    
+    console.log(`🗑️ Удаляем канал ${channelId}`);
+    
+    const response = await fetch(`http://localhost:5001/api/channels/${channelId}`, {
+      method: 'DELETE',
+      headers: { 
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Ошибка удаления канала');
+    }
+    
+    const result = await response.json();
+    console.log('✅ Канал удален:', result);
+    
+    // ✅ Закрываем профиль
+    onClose();
+    
+    // ✅ НЕ перезагружаем страницу!
+    // Канал удалится из списка через сокет (channel_deleted)
+    // который уже есть в App.jsx
+    
+  } catch (error) {
+    console.error('❌ Ошибка удаления канала:', error);
+    alert('Не удалось удалить канал: ' + error.message);
+  }
+};
 
   return (
     <div className="w-80 h-full bg-zinc-950 border-l border-zinc-800 flex flex-col animate-fade-in fixed right-0 top-0 z-50 md:relative md:z-0 shadow-2xl md:shadow-none">
       
-      {/* Шапка панели */}
+      {/* Шапка */}
       <div className="p-4 border-b border-zinc-800 flex items-center justify-between bg-zinc-950/40">
         <h3 className="font-semibold text-sm text-zinc-200">Информация</h3>
         <button 
@@ -46,41 +215,119 @@ const audioFiles = messages.filter(msg => msg && msg.mediaType === 'audio' && !m
         </button>
       </div>
 
-      {/* Основной контент профиля */}
+      {/* Контент */}
       <div className="flex-1 overflow-y-auto p-5 space-y-6 no-scrollbar">
         
-        {/* Блок аватарки и имени */}
+        {/* Аватар и имя */}
         <div className="flex flex-col items-center text-center space-y-3">
           <div className="w-24 h-24 rounded-full bg-zinc-800 flex items-center justify-center text-5xl shadow-lg border-2 border-zinc-700/50">
-            {activeChat.avatar}
+            {activeChat.avatar || '💬'}
           </div>
           <div>
             <h2 className="font-bold text-lg text-white leading-tight">{activeChat.name}</h2>
-            <span className="text-xs text-emerald-400">онлайн</span>
-          </div>
-        </div>
-
-        <hr className="border-zinc-800/60" />
-
-        {/* Данные пользователя */}
-        <div className="space-y-4 text-sm">
-          <div className="space-y-1">
-            <span className="text-xs text-zinc-500 block">Номер телефона</span>
-            <span className="text-zinc-200 font-medium">+7 (999) 123-45-67</span>
-          </div>
-          <div className="space-y-1">
-            <span className="text-xs text-zinc-500 block">О себе</span>
-            <span className="text-zinc-300 leading-relaxed">
-              {activeChat.id === 'chat_1' && 'Занят кодом. Не беспокоить по пустякам 👨‍💻'}
-              {activeChat.id === 'chat_2' && 'Обсуждение планов на обед и кофе-брейки ☕'}
-              {activeChat.id === 'chat_3' && 'Главный человек в твоей жизни ❤️'}
+            <span className="text-xs text-zinc-400">
+              {activeChat.type === 'channel' ? '📢 Канал' : '💬 Чат'}
             </span>
           </div>
         </div>
 
         <hr className="border-zinc-800/60" />
 
-        {/* Переключатель вкладок: Медиа / Аудио */}
+       {/* 👥 УЧАСТНИКИ (только для каналов) */}
+{activeChat.type === 'channel' && (
+  <div>
+    <div className="flex justify-between items-center mb-3">
+      <h4 className="text-sm font-semibold text-zinc-300">
+        Участники ({members.length})
+      </h4>
+      {isAdmin && (
+        <button 
+          onClick={() => setShowAddMember(!showAddMember)}
+          className="text-xs text-emerald-400 hover:text-emerald-300 transition"
+        >
+          {showAddMember ? '✕ Отмена' : '+ Добавить'}
+        </button>
+      )}
+    </div>
+    
+    {/* Форма добавления */}
+    {showAddMember && (
+      <div className="mb-3 p-3 bg-zinc-900 rounded-lg">
+        <select 
+          value={selectedUserId}
+          onChange={(e) => setSelectedUserId(e.target.value)}
+          className="w-full bg-zinc-800 text-white text-sm rounded-lg px-3 py-2 mb-2 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+        >
+          <option value="">Выберите пользователя</option>
+          {allUsers.map(user => (
+            <option key={user.id} value={user.dbId || user.id}>
+              {user.name || user.username}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={handleAddMember}
+          disabled={!selectedUserId}
+          className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium py-1.5 rounded-lg transition"
+        >
+          Добавить
+        </button>
+      </div>
+    )}
+    
+    {/* Список участников */}
+    {isLoading ? (
+      <div className="text-center text-zinc-500 py-4 text-sm">Загрузка...</div>
+    ) : members.length === 0 ? (
+      <div className="text-center text-zinc-500 py-4 text-sm">Нет участников</div>
+    ) : (
+      <div className="space-y-2">
+        {members.map((member) => (
+          <div key={member.id} className="flex items-center justify-between p-2 bg-zinc-900/50 rounded-lg hover:bg-zinc-900 transition">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-sm">
+                {member.user?.avatar || '👤'}
+              </div>
+              <div>
+                <p className="text-sm text-zinc-200 font-medium">{member.user?.username || 'Неизвестный'}</p>
+                <span className="text-xs text-zinc-500">
+                  {member.role === 'admin' ? '👑 Админ' : '👤 Участник'}
+                </span>
+              </div>
+            </div>
+            {isAdmin && member.role !== 'admin' && (
+              <button 
+                onClick={() => handleRemoveMember(member.userId)}
+                className="text-xs text-red-400 hover:text-red-300 transition opacity-50 hover:opacity-100"
+              >
+                Удалить
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+)}
+        <hr className="border-zinc-800/60" />
+
+        
+{/* 🗑️ УДАЛЕНИЕ КАНАЛА (только для создателя) */}
+{activeChat?.type === 'channel' && isCreator && (
+  <div className="mt-4 pt-4 border-t border-zinc-800/60">
+    <button
+      onClick={handleDeleteChannel}
+      className="w-full py-2 px-4 bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2"
+    >
+      <span>🗑️</span>
+      Удалить канал
+    </button>
+  </div>
+)}
+<hr className="border-zinc-800/60" />
+
+
+        {/* Медиа / Аудио */}
         <div className="flex border-b border-zinc-800/60 text-xs">
           <button 
             onClick={() => setActiveTab('media')}
@@ -100,9 +347,7 @@ const audioFiles = messages.filter(msg => msg && msg.mediaType === 'audio' && !m
           </button>
         </div>
 
-        {/* Контент активной вкладки */}
         <div className="pt-2">
-          {/* ВКЛАДКА: МЕДИА */}
           {activeTab === 'media' && (
             <>
               {mediaImages.length === 0 ? (
@@ -130,7 +375,6 @@ const audioFiles = messages.filter(msg => msg && msg.mediaType === 'audio' && !m
             </>
           )}
 
-          {/* ВКЛАДКА: АУДИО */}
           {activeTab === 'audio' && (
             <>
               {audioFiles.length === 0 ? (
@@ -151,11 +395,11 @@ const audioFiles = messages.filter(msg => msg && msg.mediaType === 'audio' && !m
                           {msg.createdAt ? new Date(msg.createdAt).toLocaleDateString() : 'Голосовое сообщение'}
                         </span>
                         <audio 
-  src={msg.mediaUrl  || msg.audio  || msg.fileUrl  || ""} // Берём любое доступное поле с URL
-  controls 
-  className="w-full h-6 text-xs filter invert opacity-70 hover:opacity-100 transition" 
-  onClick={(e) => e.stopPropagation()} 
-/>
+                          src={msg.mediaUrl || msg.audio || msg.fileUrl || ""}
+                          controls 
+                          className="w-full h-6 text-xs filter invert opacity-70 hover:opacity-100 transition" 
+                          onClick={(e) => e.stopPropagation()} 
+                        />
                       </div>
                     </div>
                   ))}

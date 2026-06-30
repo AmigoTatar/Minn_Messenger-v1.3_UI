@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CHAT_IDS } from '../config';
 
 export default function Sidebar({ 
@@ -12,14 +12,23 @@ export default function Sidebar({
   onToggleTheme,
   onLogout,
   channels,
+  groupChats = [], 
   onSelectChat,
-  onCreateChannel 
+  onCreateChannel,
+  onCreateGroupChat 
 }) {
+  
   const { GENERAL, GENERAL_ALT } = CHAT_IDS;
   // Стейты для управления модалкой создания канала
   const [isNewChannelModalOpen, setIsNewChannelModalOpen] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
   const [newChannelAvatar, setNewChannelAvatar] = useState('📢');
+  // Стейты для создания группового чата
+const [isNewGroupChatModalOpen, setIsNewGroupChatModalOpen] = useState(false);
+const [newGroupChatName, setNewGroupChatName] = useState('');
+const [newGroupChatAvatar, setNewGroupChatAvatar] = useState('💬');
+const [selectedUsers, setSelectedUsers] = useState([]);
+const [allUsersForChat, setAllUsersForChat] = useState([]);
 
   // Вспомогательная функция безопасного форматирования времени Prisma (ISO -> ЧЧ:ММ)
   const formatMsgTime = (dateString) => {
@@ -66,6 +75,29 @@ const generalUnreadCount = (() => {
   return 0;
 })();
 
+// Загружаем пользователей для выбора в групповой чат
+useEffect(() => {
+  if (!isNewGroupChatModalOpen) return;
+  
+  const fetchUsers = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:5001/api/users', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (response.ok) {
+        const users = await response.json();
+        setAllUsersForChat(users);
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки пользователей:', error);
+    }
+  };
+  
+  fetchUsers();
+}, [isNewGroupChatModalOpen]);
+
 
   return (
     <div className={`w-full md:w-80 h-full max-h-screen overflow-hidden border-r border-zinc-200 dark:border-zinc-800 flex flex-col bg-white dark:bg-zinc-950 transition-colors duration-300 ${activeChatId ? 'hidden md:flex' : 'flex'}`}>
@@ -88,51 +120,33 @@ const generalUnreadCount = (() => {
         </div>
       </div>
 
+<div className="flex justify-between items-center">
+  <h1 className="text-xl font-bold text-zinc-800 dark:text-white">Чаты</h1>
+  <div className="flex gap-2">
+    <button
+      onClick={() => setIsNewChannelModalOpen(true)}
+      className="p-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-emerald-600/20"
+      title="Создать канал"
+    >
+      📢+
+    </button>
+    <button
+      onClick={() => setIsNewGroupChatModalOpen(true)}
+      className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-blue-600/20"
+      title="Создать групповой чат"
+    >
+      👥+
+    </button>
+  </div>
+</div>
+      
+
  {/* ========================================================================= */}
       {/* 📦 ЕДИНЫЙ БЕСШОВНЫЙ СКРОЛЛ-КОНТЕЙНЕР (УБИРАЕТ НЕВИДИМЫЕ ОТСТУПЫ И ЛИШНИЕ СКРОЛЛЫ) */}
       {/* ========================================================================= */}
       <div className="flex-1 overflow-y-auto no-scrollbar px-2 py-2 space-y-1">
-        
-        {/* 💬 1. СТАТИЧНАЯ КНОПКА ОБЩЕГО ЧАТА СО СЧЕТЧИКОМ */}
-<button
-  key="static_chat_general"
-  type="button"
-  onClick={() => {
-    if (typeof onSelectChat === 'function') {
-      onSelectChat('chat_general');
-    } else if (typeof setActiveChatId === 'function') {
-      setActiveChatId('chat_general');
-    }
-  }}
-  className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left relative ${
-    activeChatId === 'chat_general'
-      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30'
-      : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
-  }`}
->
-  <div className="relative mr-3 shrink-0">
-    <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl shadow-sm">
-      💬
-    </div>
-  </div>
-  <div className="flex-1 min-w-0">
-    <div className="flex justify-between items-baseline mb-0.5">
-      <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">Общий чат</h3>
-    </div>
-    
-    {/* 👇 КОНТЕЙНЕР ДЛЯ ОПИСАНИЯ И ЗЕЛЕНОГО КРУЖКА */}
-    <div className="flex justify-between items-center gap-2">
-      <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">Глобальная комната вещания</p>
-      
-      {/* 🟢 ЗДЕСЬ ДОЛЖЕН БЫТЬ ЗЕЛЕНЫЙ КРУЖОК */}
-      {generalUnreadCount > 0 && (
-        <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0 animate-pulse">
-          {generalUnreadCount}
-        </span>
-      )}
-    </div>
-  </div>
-</button>
+
+
 
 
         {/* 👥 2. ДИНАМИЧЕСКИЙ СПИСОК ПРИВАТНЫХ ДИАЛОГОВ И ПОЛЬЗОВАТЕЛЕЙ */}
@@ -199,29 +213,22 @@ const generalUnreadCount = (() => {
           );
         })}
 
-        {/* 🗣️ 3. ДИНАМИЧЕСКИЙ СПИСОК ПУБЛИЧНЫХ КАНАЛОВ (БЕЗОПАСНАЯ ИЗОЛЯЦИЯ И МГНОВЕННЫЕ СОКЕТЫ) */}
-        {Array.isArray(channels) && channels.map((channelItem, index) => {
+{/* 🗣️ 3. ДИНАМИЧЕСКИЙ СПИСОК ПУБЛИЧНЫХ КАНАЛОВ */}
+{Array.isArray(channels) && channels.map((channelItem, index) => {
   if (!channelItem) return null;
   
   const isChannelActive = activeChatId === `channel_${channelItem.id}`;
+  const unreadCount = channelItem.unreadCount || 0;
   
-  // 🛡️ ПЕРЕХВАТ СОКЕТОВ ДЛЯ МГНОВЕННОГО ОБНОВЛЕНИЯ КРУЖОЧКОВ:
-  const liveUpdateInChats = Array.isArray(chats) 
-    ? chats.find(c => c && (String(c.id) === `channel_${channelItem.id}` || String(c.id) === String(channelItem.id))) 
-    : null;
-
-  const currentUnread = Number(liveUpdateInChats ? liveUpdateInChats.unreadCount : (channelItem.unreadCount || 0));
+  console.log(`📊 Канал ${channelItem.name}: unreadCount = ${unreadCount}`);
   
-
-          return (
-<button
+  return (
+    <button
       key={`sidebar_chan_${channelItem.id}_${index}`}
       type="button"
       onClick={() => {
         if (typeof onSelectChat === 'function') {
-          onSelectChat(`channel_${channelItem.id}`); 
-        } else if (typeof setActiveChatId === 'function') {
-          setActiveChatId(`channel_${channelItem.id}`);
+          onSelectChat(`channel_${channelItem.id}`);
         }
       }}
       className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
@@ -238,12 +245,12 @@ const generalUnreadCount = (() => {
           <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">{channelItem.name}</h3>
         </div>
         <div className="flex justify-between items-center gap-2">
-          <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">Официальный канал вещания</p>
+          <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">Канал</p>
           
-          {/* 🟢 ЗДЕСЬ ДОЛЖЕН БЫТЬ ЗЕЛЕНЫЙ КРУЖОК */}
-          {currentUnread > 0 && (
-            <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0 animate-pulse">
-              {currentUnread}
+          {/* 🟢 ЗЕЛЕНЫЙ КРУЖОК - ДЛЯ КАНАЛА */}
+          {unreadCount > 0 && (
+            <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0">
+              {unreadCount}
             </span>
           )}
         </div>
@@ -253,6 +260,72 @@ const generalUnreadCount = (() => {
 })}
 
 
+{/* 👥 4. ГРУППОВЫЕ ЧАТЫ */}
+{Array.isArray(groupChats) && groupChats.length > 0 && (
+  <>
+    <div className="px-3 pt-3 pb-1 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+      <span>👥 Групповые чаты</span>
+      <span className="text-[9px] text-zinc-500">({groupChats.length})</span>
+    </div>
+    {groupChats.map((chat) => {
+      if (!chat) return null;
+      
+      const isActive = activeChatId === chat.id;
+      const lastMessage = chat.lastMessage || null;
+      
+      return (
+        <button
+          key={`group_chat_${chat.id}`}
+          type="button"
+          onClick={() => {
+            if (typeof onSelectChat === 'function') {
+              onSelectChat(chat.id);
+            }
+          }}
+          className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
+            isActive 
+              ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
+              : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
+          }`}
+        >
+          <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm relative">
+            {chat.avatar || '💬'}
+            {/* Индикатор количества участников */}
+            {chat.members && chat.members.length > 0 && (
+              <span className="absolute -bottom-0.5 -right-0.5 text-[8px] bg-zinc-800 dark:bg-zinc-700 text-white rounded-full px-1 min-w-[14px] h-[14px] flex items-center justify-center border border-white dark:border-zinc-900">
+                {chat.members.length}
+              </span>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex justify-between items-baseline mb-0.5">
+              <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
+                {chat.name}
+              </h3>
+              {lastMessage && (
+                <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
+                  {formatMsgTime(lastMessage.createdAt)}
+                </span>
+              )}
+            </div>
+            <div className="flex justify-between items-center gap-2">
+              <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
+                {lastMessage 
+                  ? lastMessage.isDeleted ? '🚫 Сообщение удалено' : lastMessage.text || 'Медиафайл'
+                  : 'Нет сообщений'}
+              </p>
+              {chat.unreadCount > 0 && (
+                <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0">
+                  {chat.unreadCount}
+                </span>
+              )}
+            </div>
+          </div>
+        </button>
+      );
+    })}
+  </>
+)}
 
 
       </div>
@@ -290,7 +363,7 @@ const generalUnreadCount = (() => {
           Выйти из аккаунта
         </button>
       </div>
-      {/* Модальное окно создания канала */}
+           {/* Модальное окно создания канала */}
       {isNewChannelModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 w-full max-w-sm shadow-2xl border border-zinc-100 dark:border-zinc-800 transition-colors">
@@ -339,6 +412,127 @@ const generalUnreadCount = (() => {
           </div>
         </div>
       )}
+
+      {/* ============================================ */}
+      {/* 🆕 МОДАЛЬНОЕ ОКНО СОЗДАНИЯ ГРУППОВОГО ЧАТА */}
+      {/* ============================================ */}
+      {isNewGroupChatModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 w-full max-w-md shadow-2xl border border-zinc-100 dark:border-zinc-800">
+            <h3 className="text-lg font-bold text-zinc-800 dark:text-white mb-4">
+              Создать групповой чат 👥
+            </h3>
+            
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              if (typeof onCreateGroupChat === 'function') {
+                onCreateGroupChat({
+                  name: newGroupChatName,
+                  avatar: newGroupChatAvatar || '💬',
+                  memberIds: selectedUsers
+                });
+              }
+              setIsNewGroupChatModalOpen(false);
+              setNewGroupChatName('');
+              setNewGroupChatAvatar('💬');
+              setSelectedUsers([]);
+            }} className="space-y-4">
+              
+              {/* Название */}
+              <div>
+                <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">
+                  Название чата
+                </label>
+                <input 
+                  type="text" 
+                  placeholder="Например: Команда проекта"
+                  value={newGroupChatName}
+                  onChange={(e) => setNewGroupChatName(e.target.value)}
+                  className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl p-2.5 text-sm focus:outline-none focus:border-blue-500 text-zinc-800 dark:text-white"
+                  required
+                />
+              </div>
+
+              {/* Аватар */}
+              <div>
+                <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">
+                  Иконка (эмодзи)
+                </label>
+                <input 
+                  type="text" 
+                  value={newGroupChatAvatar}
+                  onChange={(e) => setNewGroupChatAvatar(e.target.value)}
+                  className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl p-2.5 text-center text-2xl focus:outline-none focus:border-blue-500"
+                  maxLength={2}
+                  placeholder="💬"
+                />
+              </div>
+
+              {/* Выбор участников */}
+              <div>
+                <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">
+                  Участники ({selectedUsers.length})
+                </label>
+                <div className="max-h-40 overflow-y-auto space-y-1 bg-zinc-50 dark:bg-zinc-950 rounded-xl p-2 border border-zinc-200 dark:border-zinc-800">
+                  {allUsersForChat.length === 0 ? (
+                    <div className="text-center text-zinc-400 text-sm py-4">Загрузка...</div>
+                  ) : (
+                    allUsersForChat.map(user => (
+                      <label key={user.id} className="flex items-center gap-3 p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg cursor-pointer transition">
+                        <input
+                          type="checkbox"
+                          checked={selectedUsers.includes(user.dbId || user.id)}
+                          onChange={() => {
+                            const userId = user.dbId || user.id;
+                            setSelectedUsers(prev =>
+                              prev.includes(userId)
+                                ? prev.filter(id => id !== userId)
+                                : [...prev, userId]
+                            );
+                          }}
+                          className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                        />
+                        <span className="text-sm">
+                          {user.avatar || '👤'} {user.name || user.username}
+                        </span>
+                      </label>
+                    ))
+                  )}
+                </div>
+                {selectedUsers.length === 0 && (
+                  <p className="text-xs text-zinc-400 mt-1">Выберите хотя бы одного участника</p>
+                )}
+              </div>
+
+              {/* Кнопки */}
+              <div className="flex justify-end space-x-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsNewGroupChatModalOpen(false);
+                    setNewGroupChatName('');
+                    setNewGroupChatAvatar('💬');
+                    setSelectedUsers([]);
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  disabled={selectedUsers.length === 0 || !newGroupChatName.trim()}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition shadow-md shadow-blue-600/10"
+                >
+                  Создать чат
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+
+

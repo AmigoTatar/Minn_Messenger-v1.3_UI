@@ -16,6 +16,7 @@ export default function ChatArea({
   onSendAudio,
   activeChatData,
   messages,
+  setMessages, 
   currentUserId,
   socketRef,
   typingUser,
@@ -24,6 +25,7 @@ export default function ChatArea({
   apiBaseUrl = API_BASE_URL,
   isHistoryLoading 
 }) {
+ /* console.log(`🚀 ChatArea МОНТАЖ: activeChatId = ${activeChatId}`);*/
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, msgId: null });
   const fileInputRef = useRef(null);
 
@@ -47,6 +49,9 @@ export default function ChatArea({
   const observerRef = useRef(null);
   const intervalRef = useRef(null);
 
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [replyText, setReplyText] = useState('');
+
   // Метод плавного скролла вниз (к самым свежим сообщениям)
   const scrollToBottomSmooth = () => {
     isUserScrolledUp.current = false;
@@ -69,6 +74,37 @@ export default function ChatArea({
     return () => window.removeEventListener('click', handleCloseMenu);
   }, []);
 
+  // ДОБАВЬТЕ ЭТОТ useEffect ДЛЯ ДИАГНОСТИКИ
+useEffect(() => {
+
+  
+  // Проверяем, какие сообщения проходят фильтр
+  if (Array.isArray(messages) && activeChatId) {
+    const stringChatId = activeChatId.toString();
+    let filtered = [];
+    
+    if (stringChatId === 'chat_general') {
+      filtered = messages.filter(m => !m.receiverId && !m.channelId);
+    } else if (stringChatId.startsWith('channel_')) {
+      const channelNumId = Number(stringChatId.replace('channel_', ''));
+      filtered = messages.filter(m => Number(m.channelId) === channelNumId);
+    } else if (stringChatId.startsWith('user_')) {
+      const targetUserId = Number(stringChatId.replace('user_', ''));
+      const myId = currentUserId ? Number(currentUserId) : null;
+      filtered = messages.filter(m => 
+        !m.channelId && (
+          (Number(m.senderId) === myId && Number(m.receiverId) === targetUserId) ||
+          (Number(m.senderId) === targetUserId && Number(m.receiverId) === myId)
+        )
+      );
+    }
+    
+ 
+    if (filtered.length > 0) {
+     
+    }
+  }
+}, [activeChatId, messages, currentUserId]);
   // =========================================================================
   // 👀 ОЖИВЛЯЕМ СЧЕТЧИКИ НЕПРОЧИТАННЫХ И УВЕДОМЛЕНИЯ В КАНАЛАХ
   // =========================================================================
@@ -142,10 +178,10 @@ export default function ChatArea({
           const container = scrollContainerRef.current;
           
           if (firstUnreadMsg && firstUnreadRef.current && !activeChatId.startsWith('channel_')) {
-            console.log("🎯 Смарт-скролл: Прыгаю к МАРКЕРУ непрочитанных");
+            
             firstUnreadRef.current.scrollIntoView({ behavior: 'auto', block: 'center' });
           } else {
-            console.log("🔽 Смарт-скролл: Прижимаю В САМЫЙ НИЗ (Прямая лента)");
+            
             if (container) {
               container.scrollTop = container.scrollHeight;
             }
@@ -173,28 +209,25 @@ export default function ChatArea({
     }
 
     // СЛУЧАЙ 2: Динамический автоскролл при летящих сообщениях из сокетов
-    if (!isPositioning && !isLockingNewMessages.current) {
-      let dynamicScrollTimer = null;
-      const lastMsg = messages[messages.length - 1]; 
-      const isLastMsgMe = Number(lastMsg?.senderId) === Number(currentUserId);
-
-      if (isLastMsgMe || !isUserScrolledUp.current) {
-        dynamicScrollTimer = setTimeout(() => {
-          if (scrollContainerRef.current) {
-            scrollContainerRef.current.scrollTo({ 
-              top: scrollContainerRef.current.scrollHeight, 
-              behavior: 'smooth' 
-            });
-          }
-        }, 30);
+  
+  // ✅ ПРИ СМЕНЕ ЧАТА - ВСЕГДА ВНИЗ
+  if (activeChatId && messages && messages.length > 0) {
+    console.log(`📜 Скролл вниз для ${activeChatId}, сообщений: ${messages.length}`);
+    
+    // Небольшая задержка для рендера
+    setTimeout(() => {
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTo({
+          top: scrollContainerRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+        isUserScrolledUp.current = false;
+        setShowScrollBtn(false);
+        setUnreadCountWhileReading(0);
       }
-
-      return () => {
-        if (dynamicScrollTimer) clearTimeout(dynamicScrollTimer);
-      };
-    }
-  }, [messages, activeChatId, isPositioning, currentUserId, firstUnreadMsg]);
-
+    }, 100);
+  }
+}, [activeChatId, messages]);
 
 useEffect(() => {
   const container = scrollContainerRef.current;
@@ -518,6 +551,8 @@ const handleScroll = (e) => {
     }
     return 'Чат';
   })();
+  /*console.log(`📦 РЕНДЕР: messages.length=${messages?.length || 0}, activeChatId=${activeChatId}`);
+console.log(`📦 messages:`, messages);*/
   return (
     <div className={`flex-col flex-1 h-full bg-zinc-100 dark:bg-zinc-900 ${activeChatId ? 'flex' : 'hidden md:flex'}`}>
       {!activeChatId ? (
@@ -595,49 +630,64 @@ const handleScroll = (e) => {
               {isHistoryLoading ? '⏳ Загрузка истории...' : ''}
             </div>
 
-{/* 💬 РЕНДЕР СООБЩЕНИЙ С ПОЛНОЙ ФУНКЦИОНАЛЬНОСТЬЮ */}
-{Array.isArray(messages) && messages
-  .filter(m => {
-    if (!m) return false;
-    const stringChatId = activeChatId.toString();
+{/* 💬 РЕНДЕР СООБЩЕНИЙ */}
+{Array.isArray(messages) && messages.length > 0 ? (
+  messages.map((msg, index) => {
+    if (!msg) return null;
+    
+    // Проверяем, что сообщение принадлежит этому чату
+    const stringChatId = activeChatId ? activeChatId.toString() : '';
+    let shouldShow = false;
 
     if (stringChatId === 'chat_general') {
-      return !m.receiverId && !m.channelId;
-    }
-
-    if (stringChatId.startsWith('channel_')) {
+      shouldShow = !msg.receiverId && !msg.channelId;
+    } else if (stringChatId.startsWith('channel_')) {
       const channelNumId = Number(stringChatId.replace('channel_', ''));
-      return Number(m.channelId) === channelNumId;
-    }
-
-    if (stringChatId.startsWith('user_')) {
+      shouldShow = Number(msg.channelId) === channelNumId;
+    } else if (stringChatId.startsWith('user_')) {
       const targetUserId = Number(stringChatId.replace('user_', ''));
       const myId = currentUserId ? Number(currentUserId) : null;
-      
-      return !m.channelId && (
-        (Number(m.senderId) === myId && Number(m.receiverId) === targetUserId) ||
-        (Number(m.senderId) === targetUserId && Number(m.receiverId) === myId)
+      shouldShow = !msg.channelId && (
+        (Number(msg.senderId) === myId && Number(msg.receiverId) === targetUserId) ||
+        (Number(msg.senderId) === targetUserId && Number(msg.receiverId) === myId)
+      );
+    } else if (stringChatId.startsWith('chat_')) {
+      const chatDbId = Number(stringChatId.replace('chat_', ''));
+      shouldShow = Number(msg.chatId) === chatDbId;
+    }
+    
+    if (!shouldShow) return null;
+
+    // ✅ УНИКАЛЬНЫЙ КЛЮЧ
+    const uniqueKey = `msg-${msg.id || msg._id || index}-${msg.threads?.length || 0}-${index}`;
+
+    // ЕСЛИ СООБЩЕНИЕ УДАЛЕНО - ПОКАЗЫВАЕМ ПЛАШКУ
+    if (msg.isDeleted) {
+      return (
+        <div key={uniqueKey} className="flex w-full mb-2 justify-center">
+          <div className="bg-zinc-100 dark:bg-zinc-800/50 text-zinc-400 dark:text-zinc-500 text-xs px-4 py-1.5 rounded-full border border-zinc-200 dark:border-zinc-700/50 select-none">
+            🗑️ Сообщение удалено
+          </div>
+        </div>
       );
     }
-    return false;
-  })
-  .map((msg, index) => {
+    
     // Вытаскиваем все возможные ключи медиафайлов
     const currentFileUrl = msg.fileUrl || msg.imageUrl || msg.mediaUrl || msg.image || '';
     const currentAudioUrl = msg.audioUrl || msg.voiceUrl || msg.audio || '';
     const currentText = msg.text || msg.content || msg.message || '';
 
     // Проверяем, является ли файл аудиозаписью
-  const isAudioFile = 
-    currentAudioUrl !== '' ||
-    MEDIA_TYPES.AUDIO.some(ext => currentFileUrl.toLowerCase().endsWith(ext)) ||
-    currentText.includes('Голосовое сообщение');
+    const isAudioFile = 
+      currentAudioUrl !== '' ||
+      (Array.isArray(MEDIA_TYPES?.AUDIO) && MEDIA_TYPES.AUDIO.some(ext => currentFileUrl.toLowerCase().endsWith(ext))) ||
+      currentText.includes('Голосовое сообщение');
 
     const isOwn = Number(msg.senderId) === Number(currentUserId);
 
     return (
       <div 
-        key={msg.id || msg._id || `msg-${index}-${Math.random()}`}
+        key={uniqueKey}
         className={`flex w-full mb-2 ${isOwn ? 'justify-end' : 'justify-start'}`}
       >
         <div 
@@ -655,6 +705,7 @@ const handleScroll = (e) => {
                 src={currentFileUrl} 
                 alt="Вложение" 
                 className="max-h-60 w-full object-cover cursor-pointer hover:opacity-90 transition"
+                onClick={() => window.open(currentFileUrl, '_blank')}
               />
             </div>
           )}
@@ -693,11 +744,122 @@ const handleScroll = (e) => {
               </span>
             )}
           </div>
+
+{/* 💬 КНОПКА ОТВЕТИТЬ И ТРЕДЫ */}
+{!msg.isDeleted && (
+  <div className="mt-1">
+    {/* Разделительная линия перед тредами */}
+    {msg.threads && msg.threads.length > 0 && (
+      <div className="border-t border-zinc-200 dark:border-zinc-700/50 my-2" />
+    )}
+    
+    <button
+      onClick={() => {
+        setReplyingTo({ messageId: msg.id, text: msg.text || 'Сообщение' });
+      }}
+      className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 transition select-none font-medium"
+    >
+      💬 Ответить
+    </button>
+    
+{/* ❤️ РЕАКЦИИ */}
+{!msg.isDeleted && (
+  <div className="flex items-center gap-0.5 mt-1 flex-wrap">
+    {/* Кнопки реакций */}
+    {['❤️', '😂', '😮', '😢', '😡', '👍'].map(emoji => {
+      const isActive = msg.reactions?.some(r => r.userId === currentUserId && r.type === emoji);
+      const count = msg.reactions?.filter(r => r.type === emoji).length || 0;
+      
+      return (
+        <button
+          key={emoji}
+          onClick={async () => {
+            try {
+              const token = localStorage.getItem('token');
+              const response = await fetch(
+                `http://localhost:5001/api/messages/${msg.id}/reactions`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({ type: emoji })
+                }
+              );
+              
+              if (!response.ok) throw new Error('Ошибка');
+              
+              // Локальное обновление (на случай, если сокет не сработает)
+              const data = await response.json();
+              setMessages(prev =>
+                prev.map(m => {
+                  if (m.id === msg.id) {
+                    return { ...m, reactions: data.reactions };
+                  }
+                  return m;
+                })
+              );
+              
+            } catch (error) {
+              console.error('Ошибка при добавлении реакции:', error);
+            }
+          }}
+          className={`text-sm px-1.5 py-0.5 rounded-full transition select-none ${
+            isActive 
+              ? 'bg-emerald-100 dark:bg-emerald-900/40 ring-1 ring-emerald-400' 
+              : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+          }`}
+        >
+          {emoji}
+          {count > 0 && (
+            <span className={`text-[10px] ml-0.5 ${isActive ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-zinc-400 dark:text-zinc-500'}`}>
+              {count}
+            </span>
+          )}
+        </button>
+      );
+    })}
+  </div>
+)}
+
+
+    {/* Отображение тредов */}
+    {msg.threads && msg.threads.length > 0 && (
+      <div className="mt-2 space-y-1.5 bg-zinc-50 dark:bg-zinc-800/30 rounded-lg p-2 border border-zinc-200/50 dark:border-zinc-700/30">
+       <div className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 mb-1.5 flex items-center gap-1">
+  <span>💬</span>
+  <span>Комментарии</span>
+  <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500 bg-zinc-200/50 dark:bg-zinc-700/30 px-1.5 py-0.5 rounded-full">
+    {msg.threads.length}
+  </span>
+</div>
+        {msg.threads.map((thread, tIndex) => (
+          <div key={`thread-${thread.id}-${tIndex}`} className="text-xs flex items-start gap-1.5">
+            <span className="font-medium text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+              {thread.user?.username || 'Неизвестный'}:
+            </span>
+            <span className="text-blue-600 dark:text-blue-400 break-words">
+              {thread.text}
+            </span>
+            <span className="text-[10px] text-zinc-500 dark:text-zinc-400 whitespace-nowrap ml-auto font-medium">
+              {new Date(thread.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
   })
-}
+) : (
+  <div className="text-center text-zinc-500 py-10">
+    💬 Нет сообщений в этом чате
+  </div>
+)}
             {/* Анимация "печатает..." */}
             {isTyping && (
               <div className="flex justify-start mb-2 w-full">
@@ -708,6 +870,78 @@ const handleScroll = (e) => {
                 </div>
               </div>
             )}
+
+
+{/* 📝 ФОРМА ОТВЕТА (ТРЕД) */}
+{replyingTo && (
+  <div className="mt-2 p-2 bg-zinc-100 dark:bg-zinc-800/60 rounded-xl border border-zinc-200 dark:border-zinc-700">
+    <div className="flex justify-between items-center mb-1">
+      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+        Ответ на: <span className="font-medium">{replyingTo.text}</span>
+      </span>
+      <button
+        onClick={() => {
+          setReplyingTo(null);
+          setReplyText('');
+        }}
+        className="text-xs text-zinc-400 hover:text-red-400 transition"
+      >
+        ✕
+      </button>
+    </div>
+    <form
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (!replyText.trim()) return;
+
+        try {
+          const token = localStorage.getItem('token');
+          const response = await fetch(
+            `http://localhost:5001/api/messages/${replyingTo.messageId}/threads?activeChatId=${activeChatId}`,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ text: replyText.trim() })
+            }
+          );
+
+          if (!response.ok) throw new Error('Ошибка создания комментария');
+
+          const newThread = await response.json();
+          
+        
+
+          setReplyText('');
+          setReplyingTo(null);
+
+        } catch (error) {
+          console.error('Ошибка создания треда:', error);
+          alert('Не удалось отправить комментарий');
+        }
+      }}
+      className="flex gap-2"
+    >
+      <input
+        type="text"
+        value={replyText}
+        onChange={(e) => setReplyText(e.target.value)}
+        placeholder="Напишите комментарий..."
+        className="flex-1 bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:border-emerald-500 text-zinc-800 dark:text-white"
+        autoFocus
+      />
+      <button
+        type="submit"
+        disabled={!replyText.trim()}
+        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-xl transition"
+      >
+        Ответить
+      </button>
+    </form>
+  </div>
+)}
 
             {/* 🎯 МАРКЕР НИЗА (В самом конце списка прямой ленты) */}
             <div ref={messagesEndRef} className="h-0 w-full" />
@@ -796,47 +1030,48 @@ const handleScroll = (e) => {
             </form>
           )}
 
-          {/* Контекстное меню (ИСПРАВЛЕННАЯ СТАБИЛЬНАЯ ВЕРСИЯ БЕЗ СЛУЧАЙНЫХ MSG) */}
-          {contextMenu.visible && (() => {
-            const currentMsg = messages?.find(m => m && (m.id === contextMenu.msgId || m._id === contextMenu.msgId));
-            if (!currentMsg) return null;
+{/* Контекстное меню */}
+{contextMenu.visible && (() => {
+  const currentMsg = messages?.find(m => m && (m.id === contextMenu.msgId || m._id === contextMenu.msgId));
+  if (!currentMsg) return null;
 
-            const isMsgMe = Number(currentMsg.senderId) === Number(currentUserId);
-            const isChannelCreator = activeChatData?.type === 'channel' && activeChatData?.creatorId === Number(currentUserId);
-            const canDelete = isMsgMe || isChannelCreator;
-            const textToCopy = currentMsg.text || currentMsg.content || currentMsg.message || '';
+  const isMsgMe = Number(currentMsg.senderId) === Number(currentUserId);
+  const isChannelCreator = activeChatData?.type === 'channel' && activeChatData?.creatorId === Number(currentUserId);
+  const canDelete = isMsgMe || isChannelCreator;
+  const textToCopy = currentMsg.text || currentMsg.content || currentMsg.message || '';
 
-            return (
-              <div 
-                className="fixed bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700/80 py-1 w-40 rounded-xl shadow-2xl z-50 text-xs text-zinc-700 dark:text-zinc-200 overflow-hidden" 
-                style={{ top: contextMenu.y, left: contextMenu.x }}
-              >
-                {!currentMsg.isDeleted && textToCopy !== '' && (
-                  <button 
-                    onClick={() => {
-                      handleCopy(textToCopy);
-                      setContextMenu({ visible: false, x: 0, y: 0, msgId: null });
-                    }} 
-                    className="w-full text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-2"
-                  >
-                    📋 Копировать текст
-                  </button>
-                )}
-                
-                {canDelete && (
-                  <button 
-                    onClick={() => { 
-                      onDeleteMessage(contextMenu.msgId); 
-                      setContextMenu({ visible: false, x: 0, y: 0, msgId: null }); 
-                    }} 
-                    className="w-full text-left px-3 py-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 dark:text-red-400 transition flex items-center gap-2 font-medium border-t border-zinc-100 dark:border-zinc-700/30"
-                  >
-                    🗑️ Удалить сообщение
-                  </button>
-                )}
-              </div>
-            );
-          })()}
+  return (
+    <div 
+      className="fixed bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700/80 py-1 w-40 rounded-xl shadow-2xl z-50 text-xs text-zinc-700 dark:text-zinc-200 overflow-hidden" 
+      style={{ top: contextMenu.y, left: contextMenu.x }}
+    >
+      {!currentMsg.isDeleted && textToCopy !== '' && (
+        <button 
+          onClick={() => {
+            handleCopy(textToCopy);
+            setContextMenu({ visible: false, x: 0, y: 0, msgId: null });
+          }} 
+          className="w-full text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-2"
+        >
+          📋 Копировать текст
+        </button>
+      )}
+      
+      
+      {canDelete && (
+        <button 
+          onClick={() => { 
+            onDeleteMessage(contextMenu.msgId); 
+            setContextMenu({ visible: false, x: 0, y: 0, msgId: null }); 
+          }} 
+          className="w-full text-left px-3 py-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 dark:text-red-400 transition flex items-center gap-2 font-medium border-t border-zinc-100 dark:border-zinc-700/30"
+        >
+          🗑️ Удалить сообщение
+        </button>
+      )}
+    </div>
+  );
+})()}
 
 
         </div>
