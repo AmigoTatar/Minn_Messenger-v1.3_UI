@@ -23,7 +23,8 @@ export default function ChatArea({
   onLoadMoreHistory,
   hasMoreHistory,
   apiBaseUrl = API_BASE_URL,
-  isHistoryLoading 
+  isHistoryLoading,
+  onMarkAsRead 
 }) {
  /* console.log(`🚀 ChatArea МОНТАЖ: activeChatId = ${activeChatId}`);*/
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, msgId: null });
@@ -34,6 +35,8 @@ export default function ChatArea({
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const timerRef = useRef(null);
+  const [showReactions, setShowReactions] = useState({});
+  const [localTypingUser, setLocalTypingUser] = useState(null);
   
   // --- Смарт-скролл и позиционирование в классической ленте ---
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -74,7 +77,38 @@ export default function ChatArea({
     return () => window.removeEventListener('click', handleCloseMenu);
   }, []);
 
-  // ДОБАВЬТЕ ЭТОТ useEffect ДЛЯ ДИАГНОСТИКИ
+// ==========================================
+// 📝 ОБРАБОТКА "ПЕЧАТАЕТ..."
+// ==========================================
+useEffect(() => {
+  if (!socketRef?.current) return;
+
+  const socket = socketRef.current;
+
+  const handleTyping = (data) => {
+    console.log('📝 Событие typing получено:', data);
+    
+    // Проверяем, что печатает НЕ текущий пользователь
+    if (data.senderId !== currentUserId) {
+      setLocalTypingUser(data); // ✅ ИСПОЛЬЗУЕМ ЛОКАЛЬНЫЙ STATE
+    }
+  };
+
+  const handleStopTyping = () => {
+    console.log('📝 Событие stop_typing получено');
+    setLocalTypingUser(null); // ✅ ИСПОЛЬЗУЕМ ЛОКАЛЬНЫЙ STATE
+  };
+
+  socket.on('typing', handleTyping);
+  socket.on('stop_typing', handleStopTyping);
+
+  return () => {
+    socket.off('typing', handleTyping);
+    socket.off('stop_typing', handleStopTyping);
+  };
+}, [socketRef, currentUserId]);
+
+ 
 useEffect(() => {
 
   
@@ -229,6 +263,25 @@ useEffect(() => {
   }
 }, [activeChatId, messages]);
 
+/*
+// ==========================================
+// 📖 ОТМЕТКА О ПРОЧТЕНИИ ПРИ ОТКРЫТИИ ЧАТА
+// ==========================================
+useEffect(() => {
+  if (activeChatId && onMarkAsRead) {
+    console.log(`📖 Отмечаю как прочитанное: ${activeChatId}`);
+    
+    if (activeChatId.startsWith('channel_')) {
+      onMarkAsRead('channel', activeChatId.replace('channel_', ''));
+    } else if (activeChatId.startsWith('chat_')) {
+      onMarkAsRead('chat', activeChatId.replace('chat_', ''));
+    } else if (activeChatId.startsWith('user_')) {
+      onMarkAsRead('private', activeChatId.replace('user_', ''));
+    }
+  }
+}, [activeChatId, onMarkAsRead]);
+*/
+
 useEffect(() => {
   const container = scrollContainerRef.current;
   if (!container) return;
@@ -352,6 +405,22 @@ const handleScroll = (e) => {
     isUserScrolledUp.current = false;
     setShowScrollBtn(false);
     setUnreadCountWhileReading(0);
+    
+ // ✅ ЕСЛИ ДОСКРОЛЛИЛИ ДО НИЗА - ОТМЕЧАЕМ КАК ПРОЧИТАННОЕ
+if (distanceFromBottom < 50 && onMarkAsRead && activeChatId) {
+  console.log('📖 Достигнут низ чата, отмечаем как прочитанное');
+  if (activeChatId.startsWith('channel_')) {
+    onMarkAsRead('channel', activeChatId.replace('channel_', ''));
+    // Обнуляем счетчик
+    if (typeof onMarkAsRead === 'function') {
+      // onMarkAsRead уже обнуляет счетчик через setUnreadCounts
+    }
+  } else if (activeChatId.startsWith('chat_')) {
+    onMarkAsRead('chat', activeChatId.replace('chat_', ''));
+  } else if (activeChatId.startsWith('user_')) {
+    onMarkAsRead('private', activeChatId.replace('user_', ''));
+  }
+}
   }
 
   // 2. 🛡️ Детектор ВЕРХА с БЛОКИРОВКОЙ
@@ -361,20 +430,16 @@ const handleScroll = (e) => {
     !isHistoryLoading && 
     hasMoreHistory && 
     scrollHeight > clientHeight &&
-    scrollMetrics.current.oldHeight === 0 // Не запускаем, если уже есть метрики
+    scrollMetrics.current.oldHeight === 0
   ) {
     console.log(`▲ Нативный скролл: Достигнут ВЕРХ. scrollTop=${scrollTop}, scrollHeight=${scrollHeight}`);
     
     if (typeof onLoadMoreHistory === 'function') {
-      // Сохраняем метрики ДО загрузки
       scrollMetrics.current.oldHeight = scrollHeight;
       scrollMetrics.current.oldTop = scrollTop;
       console.log(`📝 Сохраняю метрики: oldHeight=${scrollHeight}, oldTop=${scrollTop}`);
       
-      // Блокируем повторные вызовы
       setIsPositioning(true);
-      
-      // Вызываем загрузку
       onLoadMoreHistory();
     }
   }
@@ -521,11 +586,10 @@ const handleScroll = (e) => {
   const chatAvatar = activeChatData?.avatar || activeChat?.avatar || (activeChatId === 'chat_general' ? '💬' : '👤');
   const isDataLoading = !activeChatData && !activeChat && activeChatId !== 'chat_general';
 
-  const isCurrentChatTyping = typingUser && (
-    (typingUser.isGeneral && activeChatId === 'chat_general' && Number(typingUser.senderId) !== Number(currentUserId)) ||
-    (!typingUser.isGeneral && activeChatId?.toString().replace('user_', '') === typingUser.senderId?.toString())
-  );
-
+const isCurrentChatTyping = localTypingUser && (
+  (localTypingUser.isGeneral && activeChatId === 'chat_general' && Number(localTypingUser.senderId) !== Number(currentUserId)) ||
+  (!localTypingUser.isGeneral && activeChatId?.toString().replace('user_', '') === localTypingUser.senderId?.toString())
+);
   const formatMsgTime = (dateString) => {
     if (!dateString) return '';
     try {
@@ -585,12 +649,12 @@ console.log(`📦 messages:`, messages);*/
                 </h2>
                 
                 {/* 🛡️ РЕАКТИВНЫЙ СТАТУС В ЗАВИСИМОСТИ ОТ ТИПА КОМНАТЫ */}
-                <span className="text-xs transition-colors duration-300">
-                  {isDataLoading ? (
-                    <span className="text-zinc-500 dark:text-zinc-600 animate-pulse">поиск в базе...</span>
-                  ) : isCurrentChatTyping ? ( 
-                    <span className="text-emerald-500 dark:text-emerald-400 animate-pulse">печатает...</span>
-                  ) : (
+<span className="text-xs transition-colors duration-300">
+  {isDataLoading ? (
+    <span className="text-zinc-500 dark:text-zinc-600 animate-pulse">поиск в базе...</span>
+  ) : isCurrentChatTyping ? ( 
+    <span className="text-emerald-500 dark:text-emerald-400 animate-pulse">печатает...</span>
+  ) : (
                     <>
                       {activeChatId === 'chat_general' ? (
                         <span className="text-zinc-400 dark:text-zinc-500">общий чат</span>
@@ -745,6 +809,9 @@ console.log(`📦 messages:`, messages);*/
             )}
           </div>
 
+
+
+
 {/* 💬 КНОПКА ОТВЕТИТЬ И ТРЕДЫ */}
 {!msg.isDeleted && (
   <div className="mt-1">
@@ -762,78 +829,170 @@ console.log(`📦 messages:`, messages);*/
       💬 Ответить
     </button>
     
-{/* ❤️ РЕАКЦИИ */}
-{!msg.isDeleted && (
-  <div className="flex items-center gap-0.5 mt-1 flex-wrap">
-    {/* Кнопки реакций */}
-    {['❤️', '😂', '😮', '😢', '😡', '👍'].map(emoji => {
-      const isActive = msg.reactions?.some(r => r.userId === currentUserId && r.type === emoji);
-      const count = msg.reactions?.filter(r => r.type === emoji).length || 0;
-      
-      return (
-        <button
-          key={emoji}
-          onClick={async () => {
-            try {
-              const token = localStorage.getItem('token');
-              const response = await fetch(
-                `http://localhost:5001/api/messages/${msg.id}/reactions`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify({ type: emoji })
-                }
-              );
-              
-              if (!response.ok) throw new Error('Ошибка');
-              
-              // Локальное обновление (на случай, если сокет не сработает)
-              const data = await response.json();
-              setMessages(prev =>
-                prev.map(m => {
-                  if (m.id === msg.id) {
-                    return { ...m, reactions: data.reactions };
+    {/* ❤️ РЕАКЦИИ - для каналов и групповых чатов */}
+    {!msg.isDeleted && activeChatId && !activeChatId.startsWith('user_') && (
+      <div className="flex items-center gap-0.5 mt-1 flex-wrap">
+        {['❤️', '😂', '😮', '😢', '😡', '👍'].map(emoji => {
+          const isActive = msg.reactions?.some(r => r.userId === currentUserId && r.type === emoji);
+          const count = msg.reactions?.filter(r => r.type === emoji).length || 0;
+          
+          return (
+            <button
+              key={emoji}
+              onClick={async () => {
+                try {
+                  const token = localStorage.getItem('token');
+                  const response = await fetch(
+                    `http://localhost:5001/api/messages/${msg.id}/reactions`,
+                    {
+                      method: 'POST',
+                      headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                      },
+                      body: JSON.stringify({ type: emoji })
+                    }
+                  );
+                  
+                  if (!response.ok) throw new Error('Ошибка');
+                  
+                  const data = await response.json();
+                  if (setMessages) {
+                    setMessages(prev =>
+                      prev.map(m => {
+                        if (m.id === msg.id) {
+                          return { ...m, reactions: data.reactions };
+                        }
+                        return m;
+                      })
+                    );
                   }
-                  return m;
-                })
-              );
-              
-            } catch (error) {
-              console.error('Ошибка при добавлении реакции:', error);
-            }
-          }}
-          className={`text-sm px-1.5 py-0.5 rounded-full transition select-none ${
-            isActive 
-              ? 'bg-emerald-100 dark:bg-emerald-900/40 ring-1 ring-emerald-400' 
-              : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
-          }`}
-        >
-          {emoji}
-          {count > 0 && (
-            <span className={`text-[10px] ml-0.5 ${isActive ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-zinc-400 dark:text-zinc-500'}`}>
-              {count}
-            </span>
-          )}
-        </button>
-      );
-    })}
-  </div>
-)}
+                  
+                } catch (error) {
+                  console.error('Ошибка при добавлении реакции:', error);
+                }
+              }}
+              className={`text-sm px-1.5 py-0.5 rounded-full transition select-none ${
+                isActive 
+                  ? 'bg-emerald-100 dark:bg-emerald-900/40 ring-1 ring-emerald-400' 
+                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+              }`}
+            >
+              {emoji}
+              {count > 0 && (
+                <span className={`text-[10px] ml-0.5 ${isActive ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-zinc-400 dark:text-zinc-500'}`}>
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    )}
 
+    {/* 🔽 РЕАКЦИИ ДЛЯ ПРИВАТНЫХ ЧАТОВ (скрыты по умолчанию) */}
+    {!msg.isDeleted && activeChatId && activeChatId.startsWith('user_') && (
+      <div className="flex flex-col items-start mt-1">
+        {/* Кнопка показа/скрытия реакций */}
+        <button
+          onClick={() => {
+            setShowReactions(prev => ({ 
+              ...prev, 
+              [msg.id]: !prev[msg.id] 
+            }));
+          }}
+          className="text-[10px] text-zinc-400 hover:text-emerald-500 transition select-none"
+        >
+          {showReactions[msg.id] 
+            ? '🙈 Скрыть реакции' 
+            : `👀 Показать реакции (${msg.reactions?.length || 0})`}
+        </button>
+
+        {/* Смайлики реакций (показываются только если showReactions[msg.id] === true) */}
+        {showReactions[msg.id] && (
+          <div className="flex items-center gap-1 mt-1 flex-wrap">
+            {['❤️', '😂', '😮', '😢', '😡', '👍'].map(emoji => {
+              const isActive = msg.reactions?.some(r => r.userId === currentUserId && r.type === emoji);
+              const count = msg.reactions?.filter(r => r.type === emoji).length || 0;
+              
+              return (
+                <button
+                  key={emoji}
+                  onClick={async () => {
+                    try {
+                      const token = localStorage.getItem('token');
+                      const response = await fetch(
+                        `http://localhost:5001/api/messages/${msg.id}/reactions`,
+                        {
+                          method: 'POST',
+                          headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                          },
+                          body: JSON.stringify({ type: emoji })
+                        }
+                      );
+                      
+                      if (!response.ok) throw new Error('Ошибка');
+                      
+                      const data = await response.json();
+                      if (setMessages) {
+                        setMessages(prev =>
+                          prev.map(m => {
+                            if (m.id === msg.id) {
+                              return { ...m, reactions: data.reactions };
+                            }
+                            return m;
+                          })
+                        );
+                      }
+                      
+                    } catch (error) {
+                      console.error('Ошибка при добавлении реакции:', error);
+                    }
+                  }}
+                  className={`text-sm px-1.5 py-0.5 rounded-full transition select-none ${
+                    isActive 
+                      ? 'bg-emerald-100 dark:bg-emerald-900/40 ring-1 ring-emerald-400' 
+                      : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  {emoji}
+                  {count > 0 && (
+                    <span className={`text-[10px] ml-0.5 ${isActive ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-zinc-400 dark:text-zinc-500'}`}>
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    )}
+
+    {/* ❤️ СПИСОК ПОЛЬЗОВАТЕЛЕЙ С РЕАКЦИЯМИ (только в приватных) */}
+    {!msg.isDeleted && activeChatId && activeChatId.startsWith('user_') && showReactions[msg.id] && (
+      <div className="flex items-center gap-1 mt-1 flex-wrap text-xs text-zinc-500 dark:text-zinc-400">
+        {msg.reactions?.map(r => (
+          <span key={r.id} className="flex items-center gap-0.5">
+            <span>{r.type}</span>
+            <span className="text-[10px]">{r.user?.username}</span>
+          </span>
+        ))}
+      </div>
+    )}
 
     {/* Отображение тредов */}
     {msg.threads && msg.threads.length > 0 && (
       <div className="mt-2 space-y-1.5 bg-zinc-50 dark:bg-zinc-800/30 rounded-lg p-2 border border-zinc-200/50 dark:border-zinc-700/30">
-       <div className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 mb-1.5 flex items-center gap-1">
-  <span>💬</span>
-  <span>Комментарии</span>
-  <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500 bg-zinc-200/50 dark:bg-zinc-700/30 px-1.5 py-0.5 rounded-full">
-    {msg.threads.length}
-  </span>
-</div>
+        <div className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 mb-1.5 flex items-center gap-1">
+          <span>💬</span>
+          <span>Комментарии</span>
+          <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500 bg-zinc-200/50 dark:bg-zinc-700/30 px-1.5 py-0.5 rounded-full">
+            {msg.threads.length}
+          </span>
+        </div>
         {msg.threads.map((thread, tIndex) => (
           <div key={`thread-${thread.id}-${tIndex}`} className="text-xs flex items-start gap-1.5">
             <span className="font-medium text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
@@ -846,11 +1005,12 @@ console.log(`📦 messages:`, messages);*/
               {new Date(thread.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </span>
           </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+        ))}
+      </div>
+    )}
+  </div>
+)}
+
         </div>
       </div>
     );

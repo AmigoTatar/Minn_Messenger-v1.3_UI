@@ -15,22 +15,21 @@ export default function Sidebar({
   groupChats = [], 
   onSelectChat,
   onCreateChannel,
-  onCreateGroupChat 
+  onCreateGroupChat,
+  unreadCounts = {},
+  onMarkAsRead
 }) {
   
   const { GENERAL, GENERAL_ALT } = CHAT_IDS;
-  // Стейты для управления модалкой создания канала
   const [isNewChannelModalOpen, setIsNewChannelModalOpen] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
   const [newChannelAvatar, setNewChannelAvatar] = useState('📢');
-  // Стейты для создания группового чата
-const [isNewGroupChatModalOpen, setIsNewGroupChatModalOpen] = useState(false);
-const [newGroupChatName, setNewGroupChatName] = useState('');
-const [newGroupChatAvatar, setNewGroupChatAvatar] = useState('💬');
-const [selectedUsers, setSelectedUsers] = useState([]);
-const [allUsersForChat, setAllUsersForChat] = useState([]);
+  const [isNewGroupChatModalOpen, setIsNewGroupChatModalOpen] = useState(false);
+  const [newGroupChatName, setNewGroupChatName] = useState('');
+  const [newGroupChatAvatar, setNewGroupChatAvatar] = useState('💬');
+  const [selectedUsers, setSelectedUsers] = useState([]);
+  const [allUsersForChat, setAllUsersForChat] = useState([]);
 
-  // Вспомогательная функция безопасного форматирования времени Prisma (ISO -> ЧЧ:ММ)
   const formatMsgTime = (dateString) => {
     if (!dateString) return '';
     try {
@@ -40,6 +39,7 @@ const [allUsersForChat, setAllUsersForChat] = useState([]);
       return '';
     }
   };
+
   const handleSubmitChannel = async (e) => {
     e.preventDefault();
     if (!newChannelName.trim()) return;
@@ -51,61 +51,69 @@ const [allUsersForChat, setAllUsersForChat] = useState([]);
       });
     }
 
-    // Сбрасываем форму и закрываем окно
     setNewChannelName('');
     setNewChannelAvatar('📢');
     setIsNewChannelModalOpen(false);
   };
-  // 📊 ВСЕЯДНЫЙ И БЕЗОПАСНЫЙ СБОР НЕПРОЧИТАННЫХ ДЛЯ ОБЩЕГО ЧАТА
-const generalUnreadCount = (() => {
-  // Вариант 1: Ищем в массиве чатов
-  if (Array.isArray(chats)) {
-    const found = chats.find(c => c && (String(c.id) === GENERAL || c.id === GENERAL_ALT || c.id === 0));
-    if (found && found.unreadCount > 0) {
-      return Number(found.unreadCount);
-    }
-  }
-  // Вариант 2: Если бэкенд не обновил chats, вручную считаем по массиву messages
-  if (Array.isArray(messages)) {
-    const count = messages.filter(m => m && !m.receiverId && !m.channelId && m.status === 'unread').length;
-    
-    return count;
-  }
-  
-  return 0;
-})();
 
-// Загружаем пользователей для выбора в групповой чат
-useEffect(() => {
-  if (!isNewGroupChatModalOpen) return;
-  
-  const fetchUsers = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:5001/api/users', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      if (response.ok) {
-        const users = await response.json();
-        setAllUsersForChat(users);
+  const generalUnreadCount = (() => {
+    if (Array.isArray(chats)) {
+      const found = chats.find(c => c && (String(c.id) === GENERAL || c.id === GENERAL_ALT || c.id === 0));
+      if (found && found.unreadCount > 0) {
+        return Number(found.unreadCount);
       }
-    } catch (error) {
-      console.error('Ошибка загрузки пользователей:', error);
     }
-  };
-  
-  fetchUsers();
-}, [isNewGroupChatModalOpen]);
+    if (Array.isArray(messages)) {
+      const count = messages.filter(m => m && !m.receiverId && !m.channelId && m.status === 'unread').length;
+      return count;
+    }
+    return 0;
+  })();
 
+  useEffect(() => {
+    if (!isNewGroupChatModalOpen) return;
+    
+    const fetchUsers = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch('http://localhost:5001/api/users', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (response.ok) {
+          const users = await response.json();
+          setAllUsersForChat(users);
+        }
+      } catch (error) {
+        console.error('Ошибка загрузки пользователей:', error);
+      }
+    };
+    
+    fetchUsers();
+  }, [isNewGroupChatModalOpen]);
 
   return (
     <div className={`w-full md:w-80 h-full max-h-screen overflow-hidden border-r border-zinc-200 dark:border-zinc-800 flex flex-col bg-white dark:bg-zinc-950 transition-colors duration-300 ${activeChatId ? 'hidden md:flex' : 'flex'}`}>
       
-      {/* Шапка и строка поиска */}
       <div className="p-4 space-y-3">
         <div className="flex justify-between items-center">
           <h1 className="text-xl font-bold text-zinc-800 dark:text-white">Чаты</h1>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setIsNewChannelModalOpen(true)}
+              className="p-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-emerald-600/20"
+              title="Создать канал"
+            >
+              📢+
+            </button>
+            <button
+              onClick={() => setIsNewGroupChatModalOpen(true)}
+              className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-blue-600/20"
+              title="Создать групповой чат"
+            >
+              👥+
+            </button>
+          </div>
         </div>
         
         <div className="relative">
@@ -120,107 +128,81 @@ useEffect(() => {
         </div>
       </div>
 
-<div className="flex justify-between items-center">
-  <h1 className="text-xl font-bold text-zinc-800 dark:text-white">Чаты</h1>
-  <div className="flex gap-2">
-    <button
-      onClick={() => setIsNewChannelModalOpen(true)}
-      className="p-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-emerald-600/20"
-      title="Создать канал"
-    >
-      📢+
-    </button>
-    <button
-      onClick={() => setIsNewGroupChatModalOpen(true)}
-      className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-blue-600/20"
-      title="Создать групповой чат"
-    >
-      👥+
-    </button>
-  </div>
-</div>
-      
-
- {/* ========================================================================= */}
-      {/* 📦 ЕДИНЫЙ БЕСШОВНЫЙ СКРОЛЛ-КОНТЕЙНЕР (УБИРАЕТ НЕВИДИМЫЕ ОТСТУПЫ И ЛИШНИЕ СКРОЛЛЫ) */}
-      {/* ========================================================================= */}
       <div className="flex-1 overflow-y-auto no-scrollbar px-2 py-2 space-y-1">
-
-
-
-
-        {/* 👥 2. ДИНАМИЧЕСКИЙ СПИСОК ПРИВАТНЫХ ДИАЛОГОВ И ПОЛЬЗОВАТЕЛЕЙ */}
-        {Array.isArray(chats) && chats
+        {/* Приватные чаты */}
+{Array.isArray(chats) && chats
   .filter(chat => chat.id !== GENERAL && chat.id !== GENERAL_ALT)
   .map((chat, index) => {
-          const isActive = chat.id === activeChatId;
-          const lastMessage = chat.messages && chat.messages.length > 0 
-            ? chat.messages[chat.messages.length - 1] 
-            : null;
+    const isActive = chat.id === activeChatId;
+    const lastMessage = chat.lastMessage || null;  // ✅ ДОБАВЬ ЭТУ СТРОКУ
+    const unreadCount = unreadCounts[chat.id] || 0;
 
-          return (
-            <button
-              key={`${chat.id}_${index}`}
-              onClick={() => {
-                if (typeof onSelectChat === 'function') {
-                  const chatIdStr = chat.id.toString();
-                  let strictChatId = chatIdStr;
-                  if (!chatIdStr.startsWith('user_') && !chatIdStr.startsWith('channel_') && chatIdStr !== 'chat_general') {
-                    strictChatId = chat.isPrivate ? `user_${chatIdStr}` : `channel_${chatIdStr}`;
-                  }
-                  onSelectChat(strictChatId);
-                } else {
-                  setActiveChatId(chat.id);
-                }
-              }}
-              className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left relative ${
-                isActive 
-                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
-                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
-              }`}
-            >
-              <div className="relative mr-3 shrink-0">
-                <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl shadow-sm">
-                  {chat.avatar || '👤'}
-                </div>
-                {chat.isOnline && chat.id !== 'chat_general' && !chat.id?.startsWith('channel_') && (
-                  <span className="absolute bottom-0 right-0 block h-3 w-3 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 ring-1 ring-emerald-500/20 animate-pulse" />
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex justify-between items-baseline mb-0.5">
-                  <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">{chat.name}</h3>
-                  {lastMessage && (
-                    <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
-                      {formatMsgTime(lastMessage.createdAt)}
-                    </span>
-                  )}
-                </div>
-                <div className="flex justify-between items-center gap-2">
-                  <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
-                    {lastMessage 
-                      ? lastMessage.isDeleted ? '🚫 Сообщение удалено' : lastMessage.mediaType === 'image' ? '🖼️ Фотография' : lastMessage.mediaType === 'audio' ? '🎙️ Голосовое сообщение' : lastMessage.text 
-                      : 'Нет сообщений'}
-                  </p>
-                  {chat.unreadCount > 0 && (
-                    <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0">
-                      {chat.unreadCount}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </button>
-          );
-        })}
+    return (
+      <button
+        key={`${chat.id}_${index}`}
+        onClick={() => {
+          if (typeof onSelectChat === 'function') {
+            onSelectChat(chat.id);
+          }
+          if (unreadCount > 0 && onMarkAsRead) {
+            onMarkAsRead('private', chat.id.replace('user_', ''));
+          }
+        }}
+        className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left relative ${
+          isActive 
+            ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
+            : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
+        }`}
+      >
+        <div className="relative mr-3 shrink-0">
+          <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl shadow-sm">
+            {chat.avatar || '👤'}
+          </div>
+          {chat.isOnline && chat.id !== 'chat_general' && !chat.id?.startsWith('channel_') && (
+            <span className="absolute bottom-0 right-0 block h-3 w-3 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 ring-1 ring-emerald-500/20 animate-pulse" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex justify-between items-baseline mb-0.5">
+            <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
+              {chat.name}
+            </h3>
+            {lastMessage && (
+              <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
+                {formatMsgTime(lastMessage.createdAt)}
+              </span>
+            )}
+          </div>
+          <div className="flex justify-between items-center gap-2">
+            <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
+              {lastMessage 
+                ? lastMessage.isDeleted 
+                  ? '🚫 Сообщение удалено' 
+                  : lastMessage.mediaType === 'image' 
+                    ? '🖼️ Фотография' 
+                    : lastMessage.mediaType === 'audio' 
+                      ? '🎙️ Голосовое сообщение' 
+                      : lastMessage.text || 'Медиафайл'
+                : 'Нет сообщений'}
+            </p>
+            {unreadCount > 0 && (
+              <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0">
+                {unreadCount}
+              </span>
+            )}
+          </div>
+        </div>
+      </button>
+    );
+  })}
 
-{/* 🗣️ 3. ДИНАМИЧЕСКИЙ СПИСОК ПУБЛИЧНЫХ КАНАЛОВ */}
+        {/* Каналы */}
 {Array.isArray(channels) && channels.map((channelItem, index) => {
   if (!channelItem) return null;
   
   const isChannelActive = activeChatId === `channel_${channelItem.id}`;
-  const unreadCount = channelItem.unreadCount || 0;
-  
-  console.log(`📊 Канал ${channelItem.name}: unreadCount = ${unreadCount}`);
+  const unreadCount = unreadCounts[`channel_${channelItem.id}`] || 0;
+  const lastMessage = channelItem.lastMessage || null;
   
   return (
     <button
@@ -229,6 +211,9 @@ useEffect(() => {
       onClick={() => {
         if (typeof onSelectChat === 'function') {
           onSelectChat(`channel_${channelItem.id}`);
+        }
+        if (unreadCount > 0 && onMarkAsRead) {
+          onMarkAsRead('channel', channelItem.id);
         }
       }}
       className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
@@ -242,12 +227,27 @@ useEffect(() => {
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex justify-between items-baseline mb-0.5">
-          <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">{channelItem.name}</h3>
+          <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
+            {channelItem.name}
+          </h3>
+          {lastMessage && (
+            <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
+              {formatMsgTime(lastMessage.createdAt)}
+            </span>
+          )}
         </div>
         <div className="flex justify-between items-center gap-2">
-          <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">Канал</p>
-          
-          {/* 🟢 ЗЕЛЕНЫЙ КРУЖОК - ДЛЯ КАНАЛА */}
+<p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
+  {lastMessage 
+    ? lastMessage.isDeleted 
+      ? '🚫 Сообщение удалено' 
+      : lastMessage.mediaType === 'image' 
+        ? '🖼️ Фотография' 
+        : lastMessage.mediaType === 'audio' 
+          ? '🎙️ Голосовое сообщение' 
+          : lastMessage.text || 'Медиафайл'
+    : '📢 Канал'}
+</p>
           {unreadCount > 0 && (
             <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0">
               {unreadCount}
@@ -259,81 +259,80 @@ useEffect(() => {
   );
 })}
 
-
-{/* 👥 4. ГРУППОВЫЕ ЧАТЫ */}
-{Array.isArray(groupChats) && groupChats.length > 0 && (
-  <>
-    <div className="px-3 pt-3 pb-1 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
-      <span>👥 Групповые чаты</span>
-      <span className="text-[9px] text-zinc-500">({groupChats.length})</span>
-    </div>
-    {groupChats.map((chat) => {
-      if (!chat) return null;
-      
-      const isActive = activeChatId === chat.id;
-      const lastMessage = chat.lastMessage || null;
-      
-      return (
-        <button
-          key={`group_chat_${chat.id}`}
-          type="button"
-          onClick={() => {
-            if (typeof onSelectChat === 'function') {
-              onSelectChat(chat.id);
-            }
-          }}
-          className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
-            isActive 
-              ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
-              : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
-          }`}
-        >
-          <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm relative">
-            {chat.avatar || '💬'}
-            {/* Индикатор количества участников */}
-            {chat.members && chat.members.length > 0 && (
-              <span className="absolute -bottom-0.5 -right-0.5 text-[8px] bg-zinc-800 dark:bg-zinc-700 text-white rounded-full px-1 min-w-[14px] h-[14px] flex items-center justify-center border border-white dark:border-zinc-900">
-                {chat.members.length}
-              </span>
-            )}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex justify-between items-baseline mb-0.5">
-              <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
-                {chat.name}
-              </h3>
-              {lastMessage && (
-                <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
-                  {formatMsgTime(lastMessage.createdAt)}
-                </span>
-              )}
+        {/* Групповые чаты */}
+        {Array.isArray(groupChats) && groupChats.length > 0 && (
+          <>
+            <div className="px-3 pt-3 pb-1 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+              <span>👥 Групповые чаты</span>
+              <span className="text-[9px] text-zinc-500">({groupChats.length})</span>
             </div>
-            <div className="flex justify-between items-center gap-2">
-              <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
-                {lastMessage 
-                  ? lastMessage.isDeleted ? '🚫 Сообщение удалено' : lastMessage.text || 'Медиафайл'
-                  : 'Нет сообщений'}
-              </p>
-              {chat.unreadCount > 0 && (
-                <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0">
-                  {chat.unreadCount}
-                </span>
-              )}
-            </div>
-          </div>
-        </button>
-      );
-    })}
-  </>
-)}
-
-
+            {groupChats.map((chat) => {
+              if (!chat) return null;
+              
+              const isActive = activeChatId === chat.id;
+              const lastMessage = chat.lastMessage || null;
+              const unreadCount = unreadCounts[chat.id] || 0;
+              
+              return (
+                <button
+                  key={`group_chat_${chat.id}`}
+                  type="button"
+                  onClick={() => {
+                    if (typeof onSelectChat === 'function') {
+                      onSelectChat(chat.id);
+                    }
+                    if (unreadCount > 0 && onMarkAsRead) {
+                      onMarkAsRead('chat', chat.id.replace('chat_', ''));
+                    }
+                  }}
+                  className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
+                    isActive 
+                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
+                      : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
+                  }`}
+                >
+                  <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm relative">
+                    {chat.avatar || '💬'}
+                    {chat.members && chat.members.length > 0 && (
+                      <span className="absolute -bottom-0.5 -right-0.5 text-[8px] bg-zinc-800 dark:bg-zinc-700 text-white rounded-full px-1 min-w-[14px] h-[14px] flex items-center justify-center border border-white dark:border-zinc-900">
+                        {chat.members.length}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+<div className="flex justify-between items-baseline mb-0.5">
+  <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
+    {chat.name}
+  </h3>
+  {lastMessage && (
+    <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
+      {formatMsgTime(lastMessage.createdAt)}
+    </span>
+  )}
+</div>
+                    <div className="flex justify-between items-center gap-2">
+                      <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
+                        {lastMessage 
+                          ? lastMessage.isDeleted ? '🚫 Сообщение удалено' : lastMessage.text || 'Медиафайл'
+                          : 'Нет сообщений'}
+                      </p>
+                      {unreadCount > 0 && (
+                        <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0">
+                          {unreadCount}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </>
+        )}
       </div>
 
-      {/* Подвал сайдбара с кнопками темы и выхода */}
       <div className="p-3 border-t border-zinc-100 dark:border-zinc-900 flex flex-col gap-2 bg-zinc-50/50 dark:bg-zinc-950/20 mt-auto">
         <div className="flex justify-between items-center">
-          <span className="text-[11px] text-zinc-400 font-medium">Mini Messenger v1.3</span>
+          <span className="text-[11px] text-zinc-400 font-medium">Mini Messenger v3.1</span>
           <button
             type="button"
             onClick={onToggleTheme}
@@ -363,7 +362,8 @@ useEffect(() => {
           Выйти из аккаунта
         </button>
       </div>
-           {/* Модальное окно создания канала */}
+
+      {/* Модалка создания канала */}
       {isNewChannelModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 w-full max-w-sm shadow-2xl border border-zinc-100 dark:border-zinc-800 transition-colors">
@@ -413,9 +413,7 @@ useEffect(() => {
         </div>
       )}
 
-      {/* ============================================ */}
-      {/* 🆕 МОДАЛЬНОЕ ОКНО СОЗДАНИЯ ГРУППОВОГО ЧАТА */}
-      {/* ============================================ */}
+      {/* Модалка создания группового чата */}
       {isNewGroupChatModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 w-full max-w-md shadow-2xl border border-zinc-100 dark:border-zinc-800">
@@ -438,7 +436,6 @@ useEffect(() => {
               setSelectedUsers([]);
             }} className="space-y-4">
               
-              {/* Название */}
               <div>
                 <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">
                   Название чата
@@ -453,7 +450,6 @@ useEffect(() => {
                 />
               </div>
 
-              {/* Аватар */}
               <div>
                 <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">
                   Иконка (эмодзи)
@@ -468,7 +464,6 @@ useEffect(() => {
                 />
               </div>
 
-              {/* Выбор участников */}
               <div>
                 <label className="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">
                   Участники ({selectedUsers.length})
@@ -504,7 +499,6 @@ useEffect(() => {
                 )}
               </div>
 
-              {/* Кнопки */}
               <div className="flex justify-end space-x-3 pt-2">
                 <button
                   type="button"
@@ -533,6 +527,3 @@ useEffect(() => {
     </div>
   );
 }
-
-
-

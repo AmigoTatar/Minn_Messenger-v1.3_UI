@@ -8,44 +8,82 @@ export default function ProfilePanel({ activeChat, isOpen, onClose }) {
   const [allUsers, setAllUsers] = useState([]);
   const [selectedUserId, setSelectedUserId] = useState('');
 
-  // Получаем участников канала
+// Получаем участников канала или группового чата
 useEffect(() => {
-  if (!isOpen || !activeChat || activeChat.type !== 'channel') return;
+  if (!isOpen || !activeChat) return;
   
-  console.log('📋 activeChat в ProfilePanel:', activeChat); // ← ДОБАВЬ ЛОГ
+  console.log('📋 activeChat в ProfilePanel:', activeChat);
   
-  const fetchMembers = async () => {
-    setIsLoading(true);
-    try {
-      const token = localStorage.getItem('token');
-      // Извлекаем ID из activeChat.id (уже должно быть 'channel_8')
-      const channelId = activeChat.id.replace('channel_', '');
-      
-      console.log(`📡 Запрос участников для канала ${channelId}`);
-      
-      const response = await fetch(`http://localhost:5001/api/channels/${channelId}/members`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ Ответ сервера:', response.status, errorText);
-        throw new Error('Ошибка загрузки участников');
-      }
-      
-      const data = await response.json();
-      console.log('✅ Участники загружены:', data);
-      setMembers(data);
-      
-    } catch (error) {
-      console.error('Ошибка получения участников:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  fetchMembers();
+  // Для каналов
+  if (activeChat.type === 'channel') {
+    fetchChannelMembers();
+  }
+  
+  // Для групповых чатов
+  if (activeChat.type === 'group') {
+    fetchChatMembers();
+  }
 }, [isOpen, activeChat]);
+
+// Функция загрузки участников канала
+const fetchChannelMembers = async () => {
+  setIsLoading(true);
+  try {
+    const token = localStorage.getItem('token');
+    const channelId = activeChat.id.replace('channel_', '');
+    
+    console.log(`📡 Запрос участников для канала ${channelId}`);
+    
+    const response = await fetch(`http://localhost:5001/api/channels/${channelId}/members`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ Ответ сервера:', response.status, errorText);
+      throw new Error('Ошибка загрузки участников');
+    }
+    
+    const data = await response.json();
+    console.log('✅ Участники канала загружены:', data);
+    setMembers(data);
+    
+  } catch (error) {
+    console.error('Ошибка получения участников:', error);
+  } finally {
+    setIsLoading(false);
+  }
+};
+
+// Функция загрузки участников группового чата
+const fetchChatMembers = async () => {
+  setIsLoading(true);
+  try {
+    const token = localStorage.getItem('token');
+    const chatId = activeChat.id.replace('chat_', '');
+    
+    console.log(`📡 Запрос участников для группового чата ${chatId}`);
+    
+    const response = await fetch(`http://localhost:5001/api/chats/${chatId}/members`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ Ответ сервера:', response.status, errorText);
+      throw new Error('Ошибка загрузки участников чата');
+    }
+    
+    const data = await response.json();
+    console.log('✅ Участники группового чата загружены:', data);
+    setMembers(data);
+    
+  } catch (error) {
+    console.error('Ошибка получения участников чата:', error);
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   // Получаем всех пользователей для добавления
   useEffect(() => {
@@ -158,7 +196,7 @@ useEffect(() => {
   };
 
 
- // Удалить канал
+ 
 // Удалить канал
 const handleDeleteChannel = async () => {
   if (!confirm(`Вы уверены, что хотите удалить канал "${activeChat?.name}"? Это действие необратимо!`)) {
@@ -200,6 +238,43 @@ const handleDeleteChannel = async () => {
   }
 };
 
+// Удалить групповой чат
+const handleDeleteChat = async () => {
+  if (!confirm(`Вы уверены, что хотите удалить чат "${activeChat?.name}"? Это действие необратимо!`)) {
+    return;
+  }
+
+  try {
+    const token = localStorage.getItem('token');
+    const chatId = activeChat.id.replace('chat_', '');
+    
+    console.log(`🗑️ Удаляем групповой чат ${chatId}`);
+    
+    const response = await fetch(`http://localhost:5001/api/chats/${chatId}`, {
+      method: 'DELETE',
+      headers: { 
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Ошибка удаления чата');
+    }
+    
+    const result = await response.json();
+    console.log('✅ Групповой чат удален:', result);
+    
+    // Закрываем профиль
+    onClose();
+    
+  } catch (error) {
+    console.error('❌ Ошибка удаления группового чата:', error);
+    alert('Не удалось удалить чат: ' + error.message);
+  }
+};
+
   return (
     <div className="w-80 h-full bg-zinc-950 border-l border-zinc-800 flex flex-col animate-fade-in fixed right-0 top-0 z-50 md:relative md:z-0 shadow-2xl md:shadow-none">
       
@@ -226,15 +301,17 @@ const handleDeleteChannel = async () => {
           <div>
             <h2 className="font-bold text-lg text-white leading-tight">{activeChat.name}</h2>
             <span className="text-xs text-zinc-400">
-              {activeChat.type === 'channel' ? '📢 Канал' : '💬 Чат'}
+             {activeChat.type === 'channel' ? '📢 Канал' : 
+   activeChat.type === 'group' ? '👥 Групповой чат' : 
+   '💬 Чат'}
             </span>
           </div>
         </div>
 
         <hr className="border-zinc-800/60" />
 
-       {/* 👥 УЧАСТНИКИ (только для каналов) */}
-{activeChat.type === 'channel' && (
+{/* 👥 УЧАСТНИКИ (для каналов и групповых чатов) */}
+{(activeChat.type === 'channel' || activeChat.type === 'group') && (
   <div>
     <div className="flex justify-between items-center mb-3">
       <h4 className="text-sm font-semibold text-zinc-300">
@@ -321,6 +398,18 @@ const handleDeleteChannel = async () => {
     >
       <span>🗑️</span>
       Удалить канал
+    </button>
+  </div>
+)}
+{/* 🗑️ УДАЛЕНИЕ ГРУППОВОГО ЧАТА (только для создателя) */}
+{activeChat?.type === 'group' && isCreator && (
+  <div className="mt-4 pt-4 border-t border-zinc-800/60">
+    <button
+      onClick={handleDeleteChat}
+      className="w-full py-2 px-4 bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2"
+    >
+      <span>🗑️</span>
+      Удалить групповой чат
     </button>
   </div>
 )}
