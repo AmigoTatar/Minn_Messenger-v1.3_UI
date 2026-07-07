@@ -28,6 +28,24 @@ const { GENERAL, CHANNEL_PREFIX, USER_PREFIX } = CHAT_IDS;
       }
     })()
   });
+  // 🎵 ЗВУК УВЕДОМЛЕНИЯ (простой и надежный)
+  const playSound = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      
+      // Короткий "динь"
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 1000;
+      osc.type = 'sine';
+      gain.gain.value = 0.1;
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.1);
+    } catch(e) {}
+  };
 
   // Синхронизируем authState при ручном изменении стейта user (например, при логауте)
   useEffect(() => {
@@ -366,6 +384,9 @@ socket.on('disconnect', (reason) => {
 // === 1. СЛУШАТЕЛЬ НОВЫХ СООБЩЕНИЙ ===
 socket.on('receive_message', (newMessage) => {
   console.log(`📩 Получено сообщение:`, newMessage);
+  if (String(newMessage.senderId) !== String(user?.id)) {
+    playSound();
+  }
   
   setMessages(prev => {
     if (prev.some((msg) => msg && msg.id === newMessage.id)) {
@@ -593,6 +614,36 @@ socket.on('reaction_updated', ({ messageId, reactions }) => {
       return msg;
     })
   );
+});
+
+// === СЛУШАТЕЛЬ ОБНОВЛЕНИЯ КАНАЛА ===
+socket.on('channel_updated', (data) => {
+    console.log(`📢 Обновление канала ${data.channelId}:`, data.lastMessage);
+    
+    setChannels(prev => prev.map(channel => {
+        if (Number(channel.id) === Number(data.channelId)) {
+            return {
+                ...channel,
+                lastMessage: data.lastMessage
+            };
+        }
+        return channel;
+    }));
+});
+
+// === СЛУШАТЕЛЬ ОБНОВЛЕНИЯ ГРУППОВОГО ЧАТА ===
+socket.on('chat_updated', (data) => {
+    console.log(`👥 Обновление чата ${data.chatId}:`, data.lastMessage);
+    
+    setGroupChats(prev => prev.map(chat => {
+        if (Number(chat.dbId) === Number(data.chatId)) {
+            return {
+                ...chat,
+                lastMessage: data.lastMessage
+            };
+        }
+        return chat;
+    }));
 });
 
     // === 6. СЛУШАТЕЛЬ ИЗМЕНЕНИЯ СТАТУСА ОНЛАЙНА ===
@@ -893,6 +944,8 @@ const handleSelectChat = async (chatId) => {
   if (!chatId) return;
   
   console.log("=== Переключение чата на ID:", chatId);
+  
+  // ✅ СНАЧАЛА загружаем сообщения
   setActiveChatId(chatId);
   setActiveChatData(null); 
   setHasMoreHistory(true);
@@ -900,7 +953,12 @@ const handleSelectChat = async (chatId) => {
   const stringChatId = chatId.toString();
 
   // ==========================================
-  // ✅ ОТМЕЧАЕМ КАК ПРОЧИТАННОЕ И ОБНУЛЯЕМ СЧЕТЧИК
+  // 1. СНАЧАЛА ЗАГРУЖАЕМ ИСТОРИЮ
+  // ==========================================
+  await fetchChatHistory(stringChatId);
+
+  // ==========================================
+  // 2. ПОТОМ ОТМЕЧАЕМ КАК ПРОЧИТАННОЕ
   // ==========================================
   if (stringChatId.startsWith('channel_')) {
     const cleanId = stringChatId.replace('channel_', '');
@@ -926,18 +984,14 @@ const handleSelectChat = async (chatId) => {
   }
 
   // ==========================================
-  // 2. Обработка публичных каналов
+  // 3. Обработка публичных каналов
   // ==========================================
   if (stringChatId.startsWith('channel_')) {
     const cleanChannelId = stringChatId.replace('channel_', '');
     
-    console.log(`📢 Выбран канал: ${cleanChannelId}`);
-    
     const currentChannel = channels.find(ch => 
       ch && ch.id && Number(ch.id) === Number(cleanChannelId)
     );
-    
-    console.log('🔍 Найденный канал:', currentChannel);
     
     if (currentChannel) {
       setActiveChatData({
@@ -954,13 +1008,11 @@ const handleSelectChat = async (chatId) => {
         creatorId: null 
       });
     }
-    
-    fetchChatHistory(stringChatId);
     return;
   }
 
   // ==========================================
-  // 3. Обработка приватных чатов
+  // 4. Обработка приватных чатов
   // ==========================================
   if (stringChatId.startsWith('user_')) {
     const cleanUserId = stringChatId.replace('user_', '');
@@ -985,13 +1037,11 @@ const handleSelectChat = async (chatId) => {
         dbId: Number(cleanUserId)
       });
     }
-    
-    fetchChatHistory(stringChatId);
     return;
   }
 
   // ==========================================
-  // 4. Обработка групповых чатов
+  // 5. Обработка групповых чатов
   // ==========================================
   if (stringChatId.startsWith('chat_')) {
     const cleanChatId = stringChatId.replace('chat_', '');
@@ -1012,8 +1062,6 @@ const handleSelectChat = async (chatId) => {
         type: 'group'
       });
     }
-    
-    fetchChatHistory(stringChatId);
     return;
   }
 };
@@ -1218,6 +1266,9 @@ const activeChat = {
           isHistoryLoading={isHistoryLoading}
           setMessages={setMessages}
           onMarkAsRead={markAsRead}
+          chatsProp={chats}           
+          groupChatsProp={groupChats} // групповые чаты
+          channelsProp={channels}  
         />
 
         <ProfilePanel 

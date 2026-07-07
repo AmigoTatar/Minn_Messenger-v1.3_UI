@@ -24,7 +24,10 @@ export default function ChatArea({
   hasMoreHistory,
   apiBaseUrl = API_BASE_URL,
   isHistoryLoading,
-  onMarkAsRead 
+  onMarkAsRead,
+  chatsProp,        
+  groupChatsProp,   
+  channelsProp       
 }) {
  /* console.log(`🚀 ChatArea МОНТАЖ: activeChatId = ${activeChatId}`);*/
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, msgId: null });
@@ -54,6 +57,15 @@ export default function ChatArea({
 
   const [replyingTo, setReplyingTo] = useState(null);
   const [replyText, setReplyText] = useState('');
+  // 📤 Пересылка сообщений
+const [forwardModal, setForwardModal] = useState({ 
+  visible: false, 
+  messageId: null,
+  text: '',
+  mediaUrl: null,
+  mediaType: null
+});
+const [forwardSearch, setForwardSearch] = useState('');
 
   // Метод плавного скролла вниз (к самым свежим сообщениям)
   const scrollToBottomSmooth = () => {
@@ -184,84 +196,32 @@ useEffect(() => {
     isLockingNewMessages.current = true;
   }, [activeChatId]);
 
-  // =========================================================================
-  // 🎯 АВТОСКРОЛЛ И ПОЗИЦИОНИРОВАНИЕ ЧАТА (КЛАССИЧЕСКАЯ ПРЯМАЯ ВЕРСИЯ)
+ // =========================================================================
+  // 🎯 АВТОСКРОЛЛ - ОТКРЫВАЕМ ЧАТ ВНИЗУ
   // =========================================================================
   useEffect(() => {
-    let animationFrameId = null;
-    let timerId = null;
-
-    if (!messages || messages.length === 0) {
-      if (lastProcessedChatId.current !== activeChatId) {
-        lastProcessedChatId.current = activeChatId;
-        setIsPositioning(false);
-      }
-      return;
-    }
-    // СЛУЧАЙ 1: Стартовое позиционирование при переключении чата
-    if (lastProcessedChatId.current !== activeChatId) {
-      console.log("🔄 Лог: Сообщения для нового чата отрисовались. Позиционирую в самый низ...");
-      
-      isUserScrolledUp.current = false;
-      setShowScrollBtn(false);
-      setUnreadCountWhileReading(0);
-      isLockingNewMessages.current = true; 
-
-      animationFrameId = requestAnimationFrame(() => {
-        timerId = setTimeout(() => {
-          const container = scrollContainerRef.current;
-          
-          if (firstUnreadMsg && firstUnreadRef.current && !activeChatId.startsWith('channel_')) {
-            
-            firstUnreadRef.current.scrollIntoView({ behavior: 'auto', block: 'center' });
-          } else {
-            
-            if (container) {
-              container.scrollTop = container.scrollHeight;
-            }
-          }
-          
-          setTimeout(() => {
-            if (scrollContainerRef.current) {
-              scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
-            }
-          }, 30);
-
-          lastProcessedChatId.current = activeChatId;
-          setIsPositioning(false);
-          
-          setTimeout(() => {
-            isLockingNewMessages.current = false;
-          }, 100);
-        }, 150);
-      });
-
-      return () => {
-        if (animationFrameId) cancelAnimationFrame(animationFrameId);
-        if (timerId) clearTimeout(timerId);
-      };
-    }
-
-    // СЛУЧАЙ 2: Динамический автоскролл при летящих сообщениях из сокетов
-  
-  // ✅ ПРИ СМЕНЕ ЧАТА - ВСЕГДА ВНИЗ
-  if (activeChatId && messages && messages.length > 0) {
-    console.log(`📜 Скролл вниз для ${activeChatId}, сообщений: ${messages.length}`);
+    if (!messages || messages.length === 0) return;
     
-    // Небольшая задержка для рендера
-    setTimeout(() => {
-      if (scrollContainerRef.current) {
-        scrollContainerRef.current.scrollTo({
-          top: scrollContainerRef.current.scrollHeight,
-          behavior: 'smooth'
-        });
-        isUserScrolledUp.current = false;
-        setShowScrollBtn(false);
-        setUnreadCountWhileReading(0);
-      }
-    }, 100);
-  }
-}, [activeChatId, messages]);
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    // При переключении чата - скроллим вниз
+    if (lastProcessedChatId.current !== activeChatId) {
+      console.log(`🔄 Переключение на чат: ${activeChatId}, скролл вниз`);
+      
+      lastProcessedChatId.current = activeChatId;
+      
+      // Небольшая задержка для рендера
+      setTimeout(() => {
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+          isUserScrolledUp.current = false;
+          setShowScrollBtn(false);
+          setUnreadCountWhileReading(0);
+        }
+      }, 300);
+    }
+  }, [activeChatId, messages]);
 
 /*
 // ==========================================
@@ -467,6 +427,34 @@ if (distanceFromBottom < 50 && onMarkAsRead && activeChatId) {
   const handleCopy = (text) => {
     if (text) navigator.clipboard.writeText(text);
   };
+
+  // 📤 Пересылка сообщения
+const handleForward = (targetChatId) => {
+  const { text, mediaUrl, mediaType } = forwardModal;
+  
+  if (!targetChatId) {
+    alert('❌ Выберите чат для пересылки');
+    return;
+  }
+  
+  if (socketRef.current && socketRef.current.connected) {
+    socketRef.current.emit('send_message', {
+      text: text || '📤 Пересланное сообщение',
+      mediaUrl: mediaUrl,
+      mediaType: mediaType,
+      activeChatId: targetChatId,
+      isForwarded: true
+    });
+    
+    // Закрываем модалку
+    setForwardModal({ visible: false, messageId: null, text: '', mediaUrl: null, mediaType: null });
+    
+    // Маленькое уведомление (можно заменить на toast)
+    console.log('✅ Сообщение переслано в чат:', targetChatId);
+  } else {
+    alert('❌ Нет подключения к серверу');
+  }
+};
 
   // Выгрузка картинок через Multer
   const handleFileChange = async (e) => {
@@ -752,6 +740,7 @@ console.log(`📦 messages:`, messages);*/
     return (
       <div 
         key={uniqueKey}
+        data-message-id={msg.id}
         className={`flex w-full mb-2 ${isOwn ? 'justify-end' : 'justify-start'}`}
       >
         <div 
@@ -796,6 +785,24 @@ console.log(`📦 messages:`, messages);*/
               ? 'text-emerald-100/90' 
               : 'text-zinc-400 dark:text-zinc-500' 
           }`}>
+              {/* 📤 МЕТКА ПЕРЕСЛАНО - ДОБАВИТЬ ПЕРЕД ВРЕМЕНЕМ */}
+  {msg.isForwarded && (
+    <span className="text-[9px] text-zinc-400 dark:text-zinc-500 font-medium mr-1 flex items-center gap-0.5">
+      <span className="text-[10px]">📤</span> Переслано
+    </span>
+  )}
+  
+  <span>{msg.createdAt ? formatMsgTime(msg.createdAt) : ''}</span>
+  
+  {isOwn && (
+    <span className="text-xs font-bold leading-none">
+      {msg.status === 'read' || msg.isRead === true ? (
+        <span className="text-cyan-200 dark:text-cyan-400">✓✓</span>
+      ) : (
+        <span className="text-emerald-200/60">✓</span>
+      )}
+    </span>
+  )}
             <span>{msg.createdAt ? formatMsgTime(msg.createdAt) : ''}</span>
             
             {isOwn && (
@@ -808,210 +815,60 @@ console.log(`📦 messages:`, messages);*/
               </span>
             )}
           </div>
-
-
-
-
-{/* 💬 КНОПКА ОТВЕТИТЬ И ТРЕДЫ */}
-{!msg.isDeleted && (
-  <div className="mt-1">
-    {/* Разделительная линия перед тредами */}
-    {msg.threads && msg.threads.length > 0 && (
-      <div className="border-t border-zinc-200 dark:border-zinc-700/50 my-2" />
-    )}
-    
-    <button
-      onClick={() => {
-        setReplyingTo({ messageId: msg.id, text: msg.text || 'Сообщение' });
-      }}
-      className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 transition select-none font-medium"
-    >
-      💬 Ответить
-    </button>
-    
-    {/* ❤️ РЕАКЦИИ - для каналов и групповых чатов */}
-    {!msg.isDeleted && activeChatId && !activeChatId.startsWith('user_') && (
-      <div className="flex items-center gap-0.5 mt-1 flex-wrap">
-        {['❤️', '😂', '😮', '😢', '😡', '👍'].map(emoji => {
-          const isActive = msg.reactions?.some(r => r.userId === currentUserId && r.type === emoji);
-          const count = msg.reactions?.filter(r => r.type === emoji).length || 0;
-          
-          return (
-            <button
-              key={emoji}
-              onClick={async () => {
-                try {
-                  const token = localStorage.getItem('token');
-                  const response = await fetch(
-                    `http://localhost:5001/api/messages/${msg.id}/reactions`,
-                    {
-                      method: 'POST',
-                      headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                      },
-                      body: JSON.stringify({ type: emoji })
-                    }
-                  );
-                  
-                  if (!response.ok) throw new Error('Ошибка');
-                  
-                  const data = await response.json();
-                  if (setMessages) {
-                    setMessages(prev =>
-                      prev.map(m => {
-                        if (m.id === msg.id) {
-                          return { ...m, reactions: data.reactions };
-                        }
-                        return m;
-                      })
-                    );
-                  }
-                  
-                } catch (error) {
-                  console.error('Ошибка при добавлении реакции:', error);
-                }
-              }}
-              className={`text-sm px-1.5 py-0.5 rounded-full transition select-none ${
-                isActive 
-                  ? 'bg-emerald-100 dark:bg-emerald-900/40 ring-1 ring-emerald-400' 
-                  : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
-              }`}
-            >
-              {emoji}
-              {count > 0 && (
-                <span className={`text-[10px] ml-0.5 ${isActive ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-zinc-400 dark:text-zinc-500'}`}>
-                  {count}
-                </span>
-              )}
-            </button>
-          );
-        })}
+{/* ❤️ РЕАКЦИИ (элегантные) */}
+{!msg.isDeleted && msg.reactions && msg.reactions.length > 0 && (
+  <div className="flex items-center gap-0.5 mt-1.5 flex-wrap">
+    {Object.entries(
+      msg.reactions.reduce((acc, r) => {
+        acc[r.type] = (acc[r.type] || 0) + 1;
+        return acc;
+      }, {})
+    ).map(([emoji, count]) => (
+      <span 
+        key={emoji} 
+        className="inline-flex items-center gap-0.5 text-sm px-1.5 py-0.5 rounded-full 
+          bg-zinc-100/80 dark:bg-zinc-800/60 
+          border border-zinc-200/50 dark:border-zinc-700/30
+          shadow-sm"
+      >
+        <span className="text-base leading-none">{emoji}</span>
+        <span className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">
+          {count}
+        </span>
+      </span>
+    ))}
+  </div>
+)}
+{/* 💬 ТРЕДЫ (комментарии) */}
+{!msg.isDeleted && msg.threads && msg.threads.length > 0 && (
+  <div className="mt-2 space-y-1.5 bg-zinc-50 dark:bg-zinc-800/30 rounded-lg p-2 border border-zinc-200/50 dark:border-zinc-700/30">
+    <div className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 mb-1.5 flex items-center gap-1">
+      <span>💬</span>
+      <span>Комментарии</span>
+      <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500 bg-zinc-200/50 dark:bg-zinc-700/30 px-1.5 py-0.5 rounded-full">
+        {msg.threads.length}
+      </span>
+    </div>
+    {msg.threads.map((thread, tIndex) => (
+      <div key={`thread-${thread.id}-${tIndex}`} className="text-xs flex items-start gap-1.5">
+        <span className="font-medium text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+          {thread.user?.username || 'Неизвестный'}:
+        </span>
+        <span className="text-blue-600 dark:text-blue-400 break-words">
+          {thread.text}
+        </span>
+        <span className="text-[10px] text-zinc-500 dark:text-zinc-400 whitespace-nowrap ml-auto font-medium">
+          {new Date(thread.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </span>
       </div>
-    )}
-
-    {/* 🔽 РЕАКЦИИ ДЛЯ ПРИВАТНЫХ ЧАТОВ (скрыты по умолчанию) */}
-    {!msg.isDeleted && activeChatId && activeChatId.startsWith('user_') && (
-      <div className="flex flex-col items-start mt-1">
-        {/* Кнопка показа/скрытия реакций */}
-        <button
-          onClick={() => {
-            setShowReactions(prev => ({ 
-              ...prev, 
-              [msg.id]: !prev[msg.id] 
-            }));
-          }}
-          className="text-[10px] text-zinc-400 hover:text-emerald-500 transition select-none"
-        >
-          {showReactions[msg.id] 
-            ? '🙈 Скрыть реакции' 
-            : `👀 Показать реакции (${msg.reactions?.length || 0})`}
-        </button>
-
-        {/* Смайлики реакций (показываются только если showReactions[msg.id] === true) */}
-        {showReactions[msg.id] && (
-          <div className="flex items-center gap-1 mt-1 flex-wrap">
-            {['❤️', '😂', '😮', '😢', '😡', '👍'].map(emoji => {
-              const isActive = msg.reactions?.some(r => r.userId === currentUserId && r.type === emoji);
-              const count = msg.reactions?.filter(r => r.type === emoji).length || 0;
-              
-              return (
-                <button
-                  key={emoji}
-                  onClick={async () => {
-                    try {
-                      const token = localStorage.getItem('token');
-                      const response = await fetch(
-                        `http://localhost:5001/api/messages/${msg.id}/reactions`,
-                        {
-                          method: 'POST',
-                          headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json'
-                          },
-                          body: JSON.stringify({ type: emoji })
-                        }
-                      );
-                      
-                      if (!response.ok) throw new Error('Ошибка');
-                      
-                      const data = await response.json();
-                      if (setMessages) {
-                        setMessages(prev =>
-                          prev.map(m => {
-                            if (m.id === msg.id) {
-                              return { ...m, reactions: data.reactions };
-                            }
-                            return m;
-                          })
-                        );
-                      }
-                      
-                    } catch (error) {
-                      console.error('Ошибка при добавлении реакции:', error);
-                    }
-                  }}
-                  className={`text-sm px-1.5 py-0.5 rounded-full transition select-none ${
-                    isActive 
-                      ? 'bg-emerald-100 dark:bg-emerald-900/40 ring-1 ring-emerald-400' 
-                      : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                  }`}
-                >
-                  {emoji}
-                  {count > 0 && (
-                    <span className={`text-[10px] ml-0.5 ${isActive ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-zinc-400 dark:text-zinc-500'}`}>
-                      {count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    )}
-
-    {/* ❤️ СПИСОК ПОЛЬЗОВАТЕЛЕЙ С РЕАКЦИЯМИ (только в приватных) */}
-    {!msg.isDeleted && activeChatId && activeChatId.startsWith('user_') && showReactions[msg.id] && (
-      <div className="flex items-center gap-1 mt-1 flex-wrap text-xs text-zinc-500 dark:text-zinc-400">
-        {msg.reactions?.map(r => (
-          <span key={r.id} className="flex items-center gap-0.5">
-            <span>{r.type}</span>
-            <span className="text-[10px]">{r.user?.username}</span>
-          </span>
-        ))}
-      </div>
-    )}
-
-    {/* Отображение тредов */}
-    {msg.threads && msg.threads.length > 0 && (
-      <div className="mt-2 space-y-1.5 bg-zinc-50 dark:bg-zinc-800/30 rounded-lg p-2 border border-zinc-200/50 dark:border-zinc-700/30">
-        <div className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300 mb-1.5 flex items-center gap-1">
-          <span>💬</span>
-          <span>Комментарии</span>
-          <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500 bg-zinc-200/50 dark:bg-zinc-700/30 px-1.5 py-0.5 rounded-full">
-            {msg.threads.length}
-          </span>
-        </div>
-        {msg.threads.map((thread, tIndex) => (
-          <div key={`thread-${thread.id}-${tIndex}`} className="text-xs flex items-start gap-1.5">
-            <span className="font-medium text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
-              {thread.user?.username || 'Неизвестный'}:
-            </span>
-            <span className="text-blue-600 dark:text-blue-400 break-words">
-              {thread.text}
-            </span>
-            <span className="text-[10px] text-zinc-500 dark:text-zinc-400 whitespace-nowrap ml-auto font-medium">
-              {new Date(thread.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </span>
-          </div>
-        ))}
-      </div>
-    )}
+    ))}
   </div>
 )}
 
-        </div>
+
+
+
+</div>
       </div>
     );
   })
@@ -1188,7 +1045,131 @@ console.log(`📦 messages:`, messages);*/
                 <button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition active:scale-95 shadow-md shadow-emerald-900/20">Отправить</button>
               )}
             </form>
+            
           )}
+          {/* 📤 Модалка пересылки */}
+{forwardModal.visible && (
+  <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 w-full max-w-md shadow-2xl border border-zinc-200 dark:border-zinc-800 max-h-[80vh] flex flex-col">
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-lg font-bold text-zinc-800 dark:text-white">
+          📤 Переслать сообщение
+        </h3>
+        <button
+          onClick={() => setForwardModal({ visible: false, messageId: null, text: '', mediaUrl: null, mediaType: null })}
+          className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition text-xl leading-none"
+        >
+          ✕
+        </button>
+      </div>
+      
+      {/* Превью сообщения */}
+      <div className="mb-3 p-3 bg-zinc-100 dark:bg-zinc-800/60 rounded-xl text-sm text-zinc-600 dark:text-zinc-300 max-h-16 overflow-y-auto border border-zinc-200/50 dark:border-zinc-700/50">
+        {forwardModal.text || '📎 Медиафайл'}
+      </div>
+
+      {/* Поиск */}
+      <div className="relative mb-3">
+        <input 
+          type="text"
+          value={forwardSearch}
+          onChange={(e) => setForwardSearch(e.target.value)}
+          placeholder="🔍 Поиск чатов..."
+          className="w-full bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-emerald-500 text-zinc-800 dark:text-white placeholder-zinc-400"
+        />
+      </div>
+
+      {/* Список чатов */}
+      <div className="flex-1 overflow-y-auto space-y-1 min-h-0">
+        {/* Приватные чаты */}
+        {Array.isArray(chatsProp) && chatsProp
+          .filter(chat => chat.name.toLowerCase().includes(forwardSearch.toLowerCase()))
+          .map(chat => (
+            <button
+              key={chat.id}
+              onClick={() => handleForward(chat.id)}
+              className="w-full text-left px-3 py-2.5 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 rounded-xl transition flex items-center gap-3 text-sm border border-transparent hover:border-emerald-200 dark:hover:border-emerald-800/30"
+            >
+              <span className="text-xl">{chat.avatar || '👤'}</span>
+              <span className="font-medium text-zinc-700 dark:text-zinc-300">{chat.name}</span>
+              <span className="ml-auto text-[10px] text-zinc-400 dark:text-zinc-500">приватный</span>
+            </button>
+          ))}
+        
+        {/* Групповые чаты */}
+        {Array.isArray(groupChatsProp) && groupChatsProp.length > 0 && (
+          <>
+            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 uppercase tracking-wider pt-2 pb-1 px-1 font-medium">
+              👥 Группы
+            </div>
+            {groupChatsProp
+              .filter(chat => chat.name.toLowerCase().includes(forwardSearch.toLowerCase()))
+              .map(chat => (
+                <button
+                  key={chat.id}
+                  onClick={() => handleForward(chat.id)}
+                  className="w-full text-left px-3 py-2.5 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 rounded-xl transition flex items-center gap-3 text-sm border border-transparent hover:border-emerald-200 dark:hover:border-emerald-800/30"
+                >
+                  <span className="text-xl">{chat.avatar || '💬'}</span>
+                  <span className="font-medium text-zinc-700 dark:text-zinc-300">{chat.name}</span>
+                  <span className="ml-auto text-[10px] text-zinc-400 dark:text-zinc-500">группа</span>
+                </button>
+              ))
+            }
+          </>
+        )}
+
+        {/* Каналы */}
+        {Array.isArray(channelsProp) && channelsProp.length > 0 && (
+          <>
+            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 uppercase tracking-wider pt-2 pb-1 px-1 font-medium">
+              📢 Каналы
+            </div>
+            {channelsProp
+              .filter(channel => channel.name.toLowerCase().includes(forwardSearch.toLowerCase()))
+              .map(channel => (
+                <button
+                  key={channel.id}
+                  onClick={() => handleForward(`channel_${channel.id}`)}
+                  className="w-full text-left px-3 py-2.5 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 rounded-xl transition flex items-center gap-3 text-sm border border-transparent hover:border-emerald-200 dark:hover:border-emerald-800/30"
+                >
+                  <span className="text-xl">{channel.avatar || '📢'}</span>
+                  <span className="font-medium text-zinc-700 dark:text-zinc-300">{channel.name}</span>
+                  <span className="ml-auto text-[10px] text-zinc-400 dark:text-zinc-500">канал</span>
+                </button>
+              ))
+            }
+          </>
+        )}
+
+        {(!chatsProp || chatsProp.length === 0) && 
+         (!groupChatsProp || groupChatsProp.length === 0) && 
+         (!channelsProp || channelsProp.length === 0) && (
+          <div className="text-center text-zinc-400 py-8 text-sm">
+            💬 Нет доступных чатов для пересылки
+          </div>
+        )}
+        
+        {((chatsProp && chatsProp.filter(c => c.name.toLowerCase().includes(forwardSearch.toLowerCase())).length === 0) &&
+         (groupChatsProp && groupChatsProp.filter(c => c.name.toLowerCase().includes(forwardSearch.toLowerCase())).length === 0) &&
+         (channelsProp && channelsProp.filter(c => c.name.toLowerCase().includes(forwardSearch.toLowerCase())).length === 0)) && (
+          <div className="text-center text-zinc-400 py-8 text-sm">
+            🔍 Ничего не найдено
+          </div>
+        )}
+      </div>
+
+      <div className="flex justify-end mt-4 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+        <button
+          onClick={() => setForwardModal({ visible: false, messageId: null, text: '', mediaUrl: null, mediaType: null })}
+          className="px-4 py-2 text-sm font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition"
+        >
+          Отмена
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
 {/* Контекстное меню */}
 {contextMenu.visible && (() => {
@@ -1202,37 +1183,154 @@ console.log(`📦 messages:`, messages);*/
 
   return (
     <div 
-      className="fixed bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700/80 py-1 w-40 rounded-xl shadow-2xl z-50 text-xs text-zinc-700 dark:text-zinc-200 overflow-hidden" 
-      style={{ top: contextMenu.y, left: contextMenu.x }}
+      className="fixed bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700/80 py-1.5 w-56 rounded-xl shadow-2xl z-50 text-sm text-zinc-700 dark:text-zinc-200 overflow-hidden" 
+      style={{ 
+        top: Math.min(contextMenu.y, window.innerHeight - 380), 
+        left: Math.min(contextMenu.x, window.innerWidth - 240) 
+      }}
     >
+      {/* 📋 Копировать */}
       {!currentMsg.isDeleted && textToCopy !== '' && (
         <button 
           onClick={() => {
             handleCopy(textToCopy);
             setContextMenu({ visible: false, x: 0, y: 0, msgId: null });
           }} 
-          className="w-full text-left px-3 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-2"
+          className="w-full text-left px-4 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-3"
         >
-          📋 Копировать текст
+          <span className="text-base">📋</span>
+          <span>Копировать текст</span>
         </button>
       )}
-      
-      
+
+      {/* 💬 Ответить */}
+      {!currentMsg.isDeleted && (
+        <button 
+          onClick={() => {
+            setReplyingTo({ messageId: currentMsg.id, text: currentMsg.text || 'Сообщение' });
+            setContextMenu({ visible: false, x: 0, y: 0, msgId: null });
+          }} 
+          className="w-full text-left px-4 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-3"
+        >
+          <span className="text-base">💬</span>
+          <span>Ответить</span>
+        </button>
+      )}
+
+{/* 📤 Переслать */}
+{!currentMsg.isDeleted && (
+  <button 
+    onClick={() => {
+      setForwardModal({
+        visible: true,
+        messageId: currentMsg.id,
+        text: currentMsg.text || '',
+        mediaUrl: currentMsg.mediaUrl || null,
+        mediaType: currentMsg.mediaType || null
+      });
+      setContextMenu({ visible: false, x: 0, y: 0, msgId: null });
+    }} 
+    className="w-full text-left px-4 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-700/60 transition flex items-center gap-3"
+  >
+    <span className="text-base">📤</span>
+    <span>Переслать</span>
+  </button>
+)}
+
+      {/* Разделитель */}
+      {!currentMsg.isDeleted && (
+        <div className="border-t border-zinc-200 dark:border-zinc-700/50 my-1" />
+      )}
+
+      {/* 😊 Реакции */}
+      {!currentMsg.isDeleted && (
+        <div className="px-3 py-2">
+          <div className="text-[10px] text-zinc-400 dark:text-zinc-500 uppercase tracking-wider mb-1.5 font-medium">
+            Реакции
+          </div>
+          <div className="flex gap-1 flex-wrap">
+            {['😊', '😂', '❤️', '🔥', '👏', '😮', '💪', '🎉', '👍', '👎'].map(emoji => {
+              const isActive = currentMsg.reactions?.some(r => r.userId === currentUserId && r.type === emoji);
+              const count = currentMsg.reactions?.filter(r => r.type === emoji).length || 0;
+              
+              return (
+                <button
+                  key={emoji}
+                  onClick={async () => {
+                    try {
+                      const token = localStorage.getItem('token');
+                      const response = await fetch(
+                        `http://localhost:5001/api/messages/${currentMsg.id}/reactions`,
+                        {
+                          method: 'POST',
+                          headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                          },
+                          body: JSON.stringify({ type: emoji })
+                        }
+                      );
+                      
+                      if (!response.ok) throw new Error('Ошибка');
+                      
+                      const data = await response.json();
+                      if (setMessages) {
+                        setMessages(prev =>
+                          prev.map(m => {
+                            if (m.id === currentMsg.id) {
+                              return { ...m, reactions: data.reactions };
+                            }
+                            return m;
+                          })
+                        );
+                      }
+                      setContextMenu({ visible: false, x: 0, y: 0, msgId: null });
+                    } catch (error) {
+                      console.error('Ошибка при добавлении реакции:', error);
+                    }
+                  }}
+                  className={`text-lg px-1.5 py-0.5 rounded transition select-none hover:scale-110 ${
+                    isActive 
+                      ? 'bg-emerald-100 dark:bg-emerald-900/40 ring-1 ring-emerald-400' 
+                      : 'hover:bg-zinc-100 dark:hover:bg-zinc-700/50'
+                  }`}
+                >
+                  {emoji}
+                  {count > 0 && (
+                    <span className={`text-[10px] ml-0.5 ${isActive ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-zinc-400 dark:text-zinc-500'}`}>
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Разделитель перед удалением */}
+      {canDelete && (
+        <div className="border-t border-zinc-200 dark:border-zinc-700/50 my-1" />
+      )}
+
+      {/* 🗑️ Удалить */}
       {canDelete && (
         <button 
           onClick={() => { 
-            onDeleteMessage(contextMenu.msgId); 
+            if (window.confirm('Удалить это сообщение?')) {
+              onDeleteMessage(contextMenu.msgId); 
+            }
             setContextMenu({ visible: false, x: 0, y: 0, msgId: null }); 
           }} 
-          className="w-full text-left px-3 py-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 dark:text-red-400 transition flex items-center gap-2 font-medium border-t border-zinc-100 dark:border-zinc-700/30"
+          className="w-full text-left px-4 py-2 hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500 dark:text-red-400 transition flex items-center gap-3"
         >
-          🗑️ Удалить сообщение
+          <span className="text-base">🗑️</span>
+          <span>Удалить сообщение</span>
         </button>
       )}
     </div>
   );
 })()}
-
 
         </div>
       )}
