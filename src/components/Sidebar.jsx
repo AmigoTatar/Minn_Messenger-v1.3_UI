@@ -91,6 +91,9 @@ export default function Sidebar({
     
     fetchUsers();
   }, [isNewGroupChatModalOpen]);
+  useEffect(() => {
+    console.log('📊 unreadCounts изменился:', unreadCounts);
+}, [unreadCounts]);
 
   return (
     <div className={`w-full md:w-80 h-full max-h-screen overflow-hidden border-r border-zinc-200 dark:border-zinc-800 flex flex-col bg-white dark:bg-zinc-950 transition-colors duration-300 ${activeChatId ? 'hidden md:flex' : 'flex'}`}>

@@ -110,14 +110,17 @@ const fetchChatMembers = async () => {
     fetchUsers();
   }, [showAddMember, members]);
 
-  // Добавить участника
-  const handleAddMember = async () => {
-    if (!selectedUserId) return;
+// Добавить участника (для каналов И групповых чатов)
+const handleAddMember = async () => {
+  if (!selectedUserId) return;
+  
+  try {
+    const token = localStorage.getItem('token');
     
-    try {
-      const token = localStorage.getItem('token');
+    // Определяем тип чата
+    if (activeChat.type === 'channel') {
+      // Для каналов
       const channelId = activeChat.id.replace('channel_', '');
-      
       const response = await fetch(`http://localhost:5001/api/channels/${channelId}/members`, {
         method: 'POST',
         headers: {
@@ -129,16 +132,35 @@ const fetchChatMembers = async () => {
       
       if (!response.ok) throw new Error('Ошибка добавления участника');
       
-      // Обновляем список участников
       const newMember = await response.json();
       setMembers([...members, newMember]);
-      setShowAddMember(false);
-      setSelectedUserId('');
-    } catch (error) {
-      console.error('Ошибка добавления участника:', error);
-      alert('Не удалось добавить участника');
+      
+    } else if (activeChat.type === 'group') {
+      // Для групповых чатов
+      const chatId = activeChat.id.replace('chat_', '');
+      const response = await fetch(`http://localhost:5001/api/chats/${chatId}/members`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ userId: parseInt(selectedUserId) })
+      });
+      
+      if (!response.ok) throw new Error('Ошибка добавления участника в группу');
+      
+      const newMember = await response.json();
+      setMembers([...members, newMember]);
     }
-  };
+    
+    setShowAddMember(false);
+    setSelectedUserId('');
+    
+  } catch (error) {
+    console.error('Ошибка добавления участника:', error);
+    alert('Не удалось добавить участника: ' + error.message);
+  }
+};
 
   // Удалить участника
   const handleRemoveMember = async (userId) => {
@@ -161,7 +183,27 @@ const fetchChatMembers = async () => {
       alert('Не удалось удалить участника');
     }
   };
-
+// Удалить участника из группового чата
+const handleRemoveChatMember = async (userId) => {
+  if (!confirm('Удалить участника из группового чата?')) return;
+  
+  try {
+    const token = localStorage.getItem('token');
+    const chatId = activeChat.id.replace('chat_', '');
+    
+    const response = await fetch(`http://localhost:5001/api/chats/${chatId}/members/${userId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    
+    if (!response.ok) throw new Error('Ошибка удаления участника');
+    
+    setMembers(members.filter(m => m.userId !== userId));
+  } catch (error) {
+    console.error('Ошибка удаления участника из чата:', error);
+    alert('Не удалось удалить участника');
+  }
+};
   if (!isOpen || !activeChat) return null;
 
   const messages = activeChat?.messages || [];
@@ -169,9 +211,11 @@ const fetchChatMembers = async () => {
   const audioFiles = messages.filter(msg => msg && msg.mediaType === 'audio' && !msg.isDeleted);
   
   // Проверяем, является ли пользователь админом канала
-  const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
-  const isAdmin = members.some(m => m.userId === currentUserId && m.role === 'admin');
-  const isCreator = activeChat.creatorId === currentUserId; 
+const currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id;
+const isAdmin = activeChat.type === 'channel' 
+  ? members.some(m => m.userId === currentUserId && m.role === 'admin')
+  : activeChat.creatorId === currentUserId;
+const isCreator = activeChat.creatorId === currentUserId; 
 
 
  // ✅ ДОБАВЛЯЕМ ОТЛАДОЧНЫЕ ЛОГИ
@@ -302,7 +346,7 @@ const handleDeleteChat = async () => {
             <h2 className="font-bold text-lg text-white leading-tight">{activeChat.name}</h2>
             <span className="text-xs text-zinc-400">
              {activeChat.type === 'channel' ? '📢 Канал' : 
-   activeChat.type === 'group' ? '👥 Групповой чат' : 
+    activeChat.type === 'group' ? '👥 Групповой чат' : 
    '💬 Чат'}
             </span>
           </div>
@@ -372,14 +416,20 @@ const handleDeleteChat = async () => {
                 </span>
               </div>
             </div>
-            {isAdmin && member.role !== 'admin' && (
-              <button 
-                onClick={() => handleRemoveMember(member.userId)}
-                className="text-xs text-red-400 hover:text-red-300 transition opacity-50 hover:opacity-100"
-              >
-                Удалить
-              </button>
-            )}
+{isAdmin && member.role !== 'admin' && (
+  <button 
+    onClick={() => {
+      if (activeChat.type === 'channel') {
+        handleRemoveMember(member.userId);
+      } else if (activeChat.type === 'group') {
+        handleRemoveChatMember(member.userId);
+      }
+    }}
+    className="text-xs text-red-400 hover:text-red-300 transition opacity-50 hover:opacity-100"
+  >
+    Удалить
+  </button>
+)}
           </div>
         ))}
       </div>

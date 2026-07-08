@@ -792,17 +792,7 @@ console.log(`📦 messages:`, messages);*/
     </span>
   )}
   
-  <span>{msg.createdAt ? formatMsgTime(msg.createdAt) : ''}</span>
-  
-  {isOwn && (
-    <span className="text-xs font-bold leading-none">
-      {msg.status === 'read' || msg.isRead === true ? (
-        <span className="text-cyan-200 dark:text-cyan-400">✓✓</span>
-      ) : (
-        <span className="text-emerald-200/60">✓</span>
-      )}
-    </span>
-  )}
+ 
             <span>{msg.createdAt ? formatMsgTime(msg.createdAt) : ''}</span>
             
             {isOwn && (
