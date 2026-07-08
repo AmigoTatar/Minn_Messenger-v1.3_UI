@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { getAvatarUrl } from '../utils/avatarUtils';
+import { API_BASE_URL } from '../config';
 
 export default function ProfilePanel({ activeChat, isOpen, onClose }) {
   const [activeTab, setActiveTab] = useState('media');
@@ -7,7 +9,8 @@ export default function ProfilePanel({ activeChat, isOpen, onClose }) {
   const [showAddMember, setShowAddMember] = useState(false);
   const [allUsers, setAllUsers] = useState([]);
   const [selectedUserId, setSelectedUserId] = useState('');
-
+  const [isMuted, setIsMuted] = useState(false);
+  const [isMuteLoading, setIsMuteLoading] = useState(false);
 
 
 const handleSaveName = async () => {
@@ -63,6 +66,7 @@ useEffect(() => {
   if (activeChat.type === 'group') {
     fetchChatMembers();
   }
+  fetchMuteStatus();
 }, [isOpen, activeChat]);
 
 // Функция загрузки участников канала
@@ -201,6 +205,92 @@ const handleAddMember = async () => {
     alert('Не удалось добавить участника: ' + error.message);
   }
 };
+
+  // 🔕 ФУНКЦИЯ ЗАГРУЗКИ СТАТУСА "НЕ БЕСПОКОИТЬ"
+  const fetchMuteStatus = async () => {
+    if (!activeChat) return;
+    
+    try {
+      const token = localStorage.getItem('token');
+      let type, id;
+      
+      if (activeChat.type === 'private') {
+        type = 'private';
+        id = activeChat.id?.replace('user_', '');
+      } else if (activeChat.type === 'channel') {
+        type = 'channel';
+        id = activeChat.id?.replace('channel_', '');
+      } else if (activeChat.type === 'group') {
+        type = 'chat';
+        id = activeChat.id?.replace('chat_', '');
+      } else {
+        return;
+      }
+
+      if (!id) return;
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/mute-status?type=${type}&id=${id}`,
+        {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        setIsMuted(data.muted);
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки статуса mute:', error);
+    }
+  };
+
+  // 🔕 ФУНКЦИЯ ПЕРЕКЛЮЧЕНИЯ РЕЖИМА
+  const handleToggleMute = async () => {
+    setIsMuteLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      let type, id;
+      
+      if (activeChat.type === 'private') {
+        type = 'private';
+        id = activeChat.id?.replace('user_', '');
+      } else if (activeChat.type === 'channel') {
+        type = 'channel';
+        id = activeChat.id?.replace('channel_', '');
+      } else if (activeChat.type === 'group') {
+        type = 'chat';
+        id = activeChat.id?.replace('chat_', '');
+      } else {
+        return;
+      }
+
+      if (!id) return;
+
+      const response = await fetch(`${API_BASE_URL}/api/mute`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ type, id })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Ошибка');
+      }
+
+      const data = await response.json();
+      setIsMuted(data.muted);
+      
+    } catch (error) {
+      console.error('Ошибка переключения mute:', error);
+      alert('Не удалось изменить режим');
+    } finally {
+      setIsMuteLoading(false);
+    }
+  };
 
   // Удалить участника
   const handleRemoveMember = async (userId) => {
@@ -425,13 +515,25 @@ return (
             
             {/* Аватар и имя */}
             <div className="flex flex-col items-center text-center space-y-3">
-                <div className={`w-24 h-24 rounded-full flex items-center justify-center text-5xl shadow-lg border-2 ${
-                    document.documentElement.classList.contains('dark') 
-                        ? 'bg-zinc-800 border-zinc-700/50' 
-                        : 'bg-zinc-100 border-zinc-300/50'
-                }`}>
-                    {activeChat.avatar || '💬'}
-                </div>
+<div className={`w-24 h-24 rounded-full flex items-center justify-center text-5xl shadow-lg border-2 overflow-hidden ${
+    document.documentElement.classList.contains('dark') 
+        ? 'bg-zinc-800 border-zinc-700/50' 
+        : 'bg-zinc-100 border-zinc-300/50'
+}`}>
+    {activeChat.avatar && typeof activeChat.avatar === 'string' && activeChat.avatar.startsWith('/uploads/') ? (
+        <img 
+            src={getAvatarUrl(activeChat.avatar)} 
+            alt={activeChat.name} 
+            className="w-full h-full object-cover"
+            onError={(e) => {
+                e.target.style.display = 'none';
+                e.target.parentElement.textContent = activeChat.name?.[0]?.toUpperCase() || '💬';
+            }}
+        />
+    ) : (
+        <span>{activeChat.avatar || '💬'}</span>
+    )}
+</div>
 
 
 <div className="w-full">
@@ -485,29 +587,65 @@ return (
                                 ? 'bg-zinc-900' 
                                 : 'bg-zinc-100'
                         }`}>
-                            <select 
-                                value={selectedUserId}
-                                onChange={(e) => setSelectedUserId(e.target.value)}
-                                className={`w-full text-sm rounded-lg px-3 py-2 mb-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 ${
-                                    document.documentElement.classList.contains('dark') 
-                                        ? 'bg-zinc-800 text-white' 
-                                        : 'bg-white text-zinc-900 border border-zinc-300'
-                                }`}
-                            >
-                                <option value="">Выберите пользователя</option>
-                                {allUsers.map(user => (
-                                    <option key={user.id} value={user.dbId || user.id}>
-                                        {user.name || user.username}
-                                    </option>
-                                ))}
-                            </select>
-                            <button
-                                onClick={handleAddMember}
-                                disabled={!selectedUserId}
-                                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium py-1.5 rounded-lg transition"
-                            >
-                                Добавить
-                            </button>
+<div className="max-h-48 overflow-y-auto space-y-1 mb-2">
+    {allUsers.length === 0 ? (
+        <div className="text-center text-zinc-400 text-sm py-2">Нет доступных пользователей</div>
+    ) : (
+        allUsers.map(user => {
+            const avatarUrl = user.avatar && typeof user.avatar === 'string' && user.avatar.startsWith('/uploads/') 
+                ? `http://localhost:5001${user.avatar}` 
+                : user.avatar || '👤';
+            
+            return (
+                <label 
+                    key={user.id} 
+                    className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer transition ${
+                        selectedUserId === String(user.dbId || user.id)
+                            ? 'bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50'
+                            : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                    }`}
+                >
+                    <input
+                        type="radio"
+                        name="selectedUser"
+                        value={user.dbId || user.id}
+                        checked={selectedUserId === String(user.dbId || user.id)}
+                        onChange={(e) => setSelectedUserId(e.target.value)}
+                        className="w-4 h-4 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <div className="w-8 h-8 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+                        {user.avatar && typeof user.avatar === 'string' && user.avatar.startsWith('/uploads/') ? (
+                            <img 
+                                src={avatarUrl} 
+                                alt={user.username} 
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                    e.target.style.display = 'none';
+                                    e.target.parentElement.textContent = user.username?.[0]?.toUpperCase() || '👤';
+                                }}
+                            />
+                        ) : (
+                            <span className="text-sm">{user.avatar || '👤'}</span>
+                        )}
+                    </div>
+                    <span className="text-sm text-zinc-700 dark:text-zinc-300">
+                        {user.name || user.username}
+                    </span>
+                </label>
+            );
+        })
+    )}
+</div>
+
+{/* Кнопка добавления */}
+<button
+    onClick={handleAddMember}
+    disabled={!selectedUserId}
+    className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium py-2 rounded-lg transition"
+>
+    Добавить участника
+</button>
+                          
                         </div>
                     )}
                     
@@ -533,13 +671,28 @@ return (
                                         : 'bg-zinc-100/50 hover:bg-zinc-100'
                                 }`}>
                                     <div className="flex items-center gap-3">
-                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
-                                            document.documentElement.classList.contains('dark') 
-                                                ? 'bg-zinc-800' 
-                                                : 'bg-zinc-200'
-                                        }`}>
-                                            {member.user?.avatar || '👤'}
-                                        </div>
+<div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm overflow-hidden ${
+    document.documentElement.classList.contains('dark') 
+        ? 'bg-zinc-800' 
+        : 'bg-zinc-200'
+}`}>
+    {member.user?.avatar && typeof member.user.avatar === 'string' && member.user.avatar.startsWith('/uploads/') ? (
+        <img 
+            src={getAvatarUrl(member.user.avatar)} 
+            alt={member.user?.username} 
+            className="w-full h-full object-cover"
+            onError={(e) => {
+                e.target.style.display = 'none';
+                e.target.parentElement.textContent = member.user?.username?.[0]?.toUpperCase() || '👤';
+            }}
+        />
+    ) : (
+        <span>{member.user?.avatar || '👤'}</span>
+    )}
+</div>
+
+
+
                                         <div>
                                             <p className={`text-sm font-medium ${
                                                 document.documentElement.classList.contains('dark') 
@@ -581,7 +734,30 @@ return (
                     ? 'border-zinc-800/60' 
                     : 'border-zinc-200/60'
             }`} />
+ {/* 🔕 НЕ БЕСПОКОИТЬ - КНОПКА ДЛЯ ВСЕХ ТИПОВ ЧАТОВ */}
+        <div>
+          <button
+            onClick={handleToggleMute}
+            disabled={isMuteLoading}
+            className={`w-full py-2.5 px-4 rounded-xl text-sm font-medium transition flex items-center justify-center gap-2 ${
+              isMuted 
+                ? 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300' 
+                : 'bg-zinc-800/30 hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-300'
+            }`}
+          >
+            <span>{isMuted ? '🔕' : '🔔'}</span>
+            {isMuted ? 'Включить уведомления' : 'Отключить уведомления'}
+            {isMuteLoading && (
+              <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin ml-1"></span>
+            )}
+          </button>
+        </div>
 
+        <hr className={`${
+          document.documentElement.classList.contains('dark') 
+            ? 'border-zinc-800/60' 
+            : 'border-zinc-200/60'
+        }`} />
             {/* 🗑️ УДАЛЕНИЕ КАНАЛА (только для создателя) */}
             {activeChat?.type === 'channel' && isCreator && (
                 <div className="mt-4 pt-4 border-t border-zinc-800/60">

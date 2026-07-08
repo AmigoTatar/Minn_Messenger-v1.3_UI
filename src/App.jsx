@@ -62,6 +62,7 @@ const { GENERAL, CHANNEL_PREFIX, USER_PREFIX } = CHAT_IDS;
   const [activeChatData, setActiveChatData] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [groupChats, setGroupChats] = useState([]);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   
   // ==========================================
   // 📊 НЕПРОЧИТАННЫЕ СООБЩЕНИЯ
@@ -79,6 +80,24 @@ const { GENERAL, CHANNEL_PREFIX, USER_PREFIX } = CHAT_IDS;
       return true;
     }
   });
+
+// Эффект для горячих клавиш
+useEffect(() => {
+  const handleKeyDown = (e) => {
+    // Ctrl+K или Cmd+K
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault();
+      setIsSearchOpen(true);
+    }
+    // Esc для закрытия
+    if (e.key === 'Escape' && isSearchOpen) {
+      setIsSearchOpen(false);
+    }
+  };
+  
+  window.addEventListener('keydown', handleKeyDown);
+  return () => window.removeEventListener('keydown', handleKeyDown);
+}, [isSearchOpen]);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -126,58 +145,61 @@ const fetchUnreadCounts = async () => {
 };
 
 const markAsRead = async (type, id) => {
-  const key = `${type}_${id}`;
-  if (markingAsRead.current.has(key)) {
-    console.log(`⚠️ Уже отмечается ${key}, пропускаем`);
-    return;
-  }
-  
-  markingAsRead.current.add(key);
-  
-  try {
-    const token = localStorage.getItem('token');
-    const response = await fetch(`${API_BASE_URL}/api/read`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ type, id })
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`❌ Ошибка ${response.status}:`, errorText);
-      throw new Error(`Server error: ${response.status}`);
+    const key = `${type}_${id}`;
+    if (markingAsRead.current.has(key)) {
+        console.log(`⚠️ Уже отмечается ${key}, пропускаем`);
+        return;
     }
-    
-    // ✅ Формируем ключ для unreadCounts
-    let chatKey;
-    if (type === 'channel') {
-      chatKey = `channel_${id}`;
-    } else if (type === 'chat') {
-      chatKey = `chat_${id}`;
-    } else if (type === 'private') {
-      chatKey = `user_${id}`;
-    } else {
-      chatKey = key;
+
+    markingAsRead.current.add(key);
+
+    try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`${API_BASE_URL}/api/read`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ type, id })
+        });
+
+        if (response.status === 429) {
+            console.log('⏳ Слишком много запросов на прочтение, подождите');
+            return;
+        }
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`❌ Ошибка ${response.status}:`, errorText);
+            throw new Error(`Server error: ${response.status}`);
+        }
+
+        let chatKey;
+        if (type === 'channel') {
+            chatKey = `channel_${id}`;
+        } else if (type === 'chat') {
+            chatKey = `chat_${id}`;
+        } else if (type === 'private') {
+            chatKey = `user_${id}`;
+        } else {
+            chatKey = key;
+        }
+
+        setUnreadCounts(prev => ({
+            ...prev,
+            [chatKey]: 0
+        }));
+
+        console.log(`✅ Отмечено как прочитанное: ${chatKey}, счетчик обнулен`);
+    } catch (error) {
+        console.error('❌ Error marking as read:', error);
+    } finally {
+        markingAsRead.current.delete(key);
+        setTimeout(() => {
+            markingAsRead.current.delete(key);
+        }, 500);
     }
-    
-    // ✅ Обнуляем счетчик
-    setUnreadCounts(prev => ({
-      ...prev,
-      [chatKey]: 0
-    }));
-    
-    console.log(`✅ Отмечено как прочитанное: ${chatKey}, счетчик обнулен`);
-  } catch (error) {
-    console.error('❌ Error marking as read:', error);
-  } finally {
-    markingAsRead.current.delete(key);
-    setTimeout(() => {
-      markingAsRead.current.delete(key);
-    }, 500);
-  }
 };
 
 // Добавьте useRef для защиты
@@ -455,22 +477,85 @@ const typingTimerRef = { current: null };
 
 
 // === 1. СЛУШАТЕЛЬ НОВЫХ СООБЩЕНИЙ ===
-socket.on('receive_message', (newMessage) => {
+socket.on('receive_message', async (newMessage) => {
   console.log(`📩 Получено сообщение:`, newMessage);
-  if (String(newMessage.senderId) !== String(user?.id)) {
-    playSound();
-  }
   
-  // ✅ ПРОВЕРКА: ЕСЛИ СООБЩЕНИЕ УЖЕ ЕСТЬ — НЕ ДОБАВЛЯЕМ
+  // ✅ ПРОВЕРКА: НЕ БЫЛО ЛИ ЭТО СООБЩЕНИЕ УДАЛЕНО
+  // Если сообщение уже есть в стейте и помечено как удаленное — игнорируем обновление
   setMessages(prev => {
+    // Проверяем, есть ли уже такое сообщение в стейте
+    const existingMsg = prev.find(msg => msg && msg.id === newMessage.id);
+    
+    // Если сообщение уже есть и оно удалено — НЕ обновляем его
+    if (existingMsg && existingMsg.isDeleted === true) {
+      console.log(`⚠️ Сообщение ${newMessage.id} было удалено, игнорирую обновление`);
+      return prev;
+    }
+    
+    // Если сообщение уже есть — не добавляем дубликат
     if (prev.some((msg) => msg && msg.id === newMessage.id)) {
       console.log(`⚠️ Сообщение ${newMessage.id} уже есть в массиве`);
       return prev;
     }
+    
     const newArray = [...prev, newMessage];
     console.log(`✅ Сообщение добавлено, теперь ${newArray.length} сообщений`);
     return newArray;
   });
+  
+  // 🔕 ПРОВЕРЯЕМ, НЕ ЗАМУЧЕН ЛИ ЧАТ (через API)
+  let isChatMuted = false;
+  
+  // Определяем ID чата
+  let chatId = null;
+  let chatType = null;
+  let chatIdValue = null;
+  
+  if (newMessage.channelId) {
+    chatId = `channel_${newMessage.channelId}`;
+    chatType = 'channel';
+    chatIdValue = newMessage.channelId;
+  } else if (newMessage.chatId) {
+    chatId = `chat_${newMessage.chatId}`;
+    chatType = 'chat';
+    chatIdValue = newMessage.chatId;
+  } else if (newMessage.receiverId && newMessage.senderId) {
+    const currentUserId = Number(user?.id);
+    chatId = Number(newMessage.senderId) === currentUserId 
+      ? `user_${newMessage.receiverId}` 
+      : `user_${newMessage.senderId}`;
+    chatType = 'private';
+    chatIdValue = Number(newMessage.senderId) === currentUserId 
+      ? newMessage.receiverId 
+      : newMessage.senderId;
+  }
+  
+  // 🔕 ПРОВЕРЯЕМ СТАТУС MUTE ЧЕРЕЗ API
+  if (chatType && chatIdValue) {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(
+        `${API_BASE_URL}/api/mute-status?type=${chatType}&id=${chatIdValue}`,
+        {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        isChatMuted = data.muted;
+        console.log(`🔕 Статус mute для ${chatId}: ${isChatMuted}`);
+      }
+    } catch (error) {
+      console.error('Ошибка проверки mute:', error);
+    }
+  }
+  
+  // 🔕 ВОСПРОИЗВОДИМ ЗВУК ТОЛЬКО ЕСЛИ НЕ В РЕЖИМЕ "НЕ БЕСПОКОИТЬ"
+  if (!isChatMuted && String(newMessage.senderId) !== String(user?.id)) {
+    playSound();
+  }
+  
+  
   
   const currentUserId = Number(user?.id);
   const msgSenderId = Number(newMessage.senderId);
@@ -503,43 +588,38 @@ socket.on('receive_message', (newMessage) => {
       return chat;
     }));
   }
-  
 
- // ✅ 2. Для КАНАЛОВ
-if (newMessage.channelId) {
-  console.log(`📌 Обновляю lastMessage для канала ${newMessage.channelId}`);
-  setChannels(prev => prev.map(channel => {
-    if (Number(channel.id) === Number(newMessage.channelId)) {
-      return { ...channel, lastMessage: newMessage };
-    }
-    return channel;
-  }));
-}
+  // ✅ 2. Для КАНАЛОВ
+  if (newMessage.channelId) {
+    console.log(`📌 Обновляю lastMessage для канала ${newMessage.channelId}`);
+    setChannels(prev => prev.map(channel => {
+      if (Number(channel.id) === Number(newMessage.channelId)) {
+        return { ...channel, lastMessage: newMessage };
+      }
+      return channel;
+    }));
+  }
   
-// ✅ 3. Для ГРУППОВЫХ чатов - ИСПРАВЛЕННАЯ ВЕРСИЯ
-if (newMessage.chatId) {
+  // ✅ 3. Для ГРУППОВЫХ чатов
+  if (newMessage.chatId) {
     console.log(`📌 Обновляю lastMessage для группы ${newMessage.chatId}`);
     setGroupChats(prev => prev.map(chat => {
-        // ✅ БЕЗОПАСНО ПОЛУЧАЕМ ID
-        let chatId = chat.dbId || chat.id;
-        // Если chat.id — строка с префиксом, убираем его
-        if (typeof chatId === 'string' && chatId.startsWith('chat_')) {
-            chatId = chatId.replace('chat_', '');
-        }
-        // Приводим к числу для сравнения
-        if (Number(chatId) === Number(newMessage.chatId)) {
-            console.log(`✅ Обновляю lastMessage для чата: ${chat.name}`);
-            return { ...chat, lastMessage: newMessage };
-        }
-        return chat;
+      let chatId = chat.dbId || chat.id;
+      if (typeof chatId === 'string' && chatId.startsWith('chat_')) {
+        chatId = chatId.replace('chat_', '');
+      }
+      if (Number(chatId) === Number(newMessage.chatId)) {
+        console.log(`✅ Обновляю lastMessage для чата: ${chat.name}`);
+        return { ...chat, lastMessage: newMessage };
+      }
+      return chat;
     }));
-}
+  }
 
   // ==========================================
   // 🛡️ ЗАЩИТА: если поля потерялись при передаче
   // ==========================================
   
-  // Если мы находимся в канале, но newMessage.channelId === null
   if (activeChatId && activeChatId.startsWith('channel_') && !newMessage.channelId && !newMessage.receiverId) {
     const channelId = Number(activeChatId.replace('channel_', ''));
     console.log(`🔧 Принудительно обновляю канал ${channelId} (защита)`);
@@ -551,7 +631,6 @@ if (newMessage.chatId) {
     }));
   }
   
-  // Если мы находимся в группе, но newMessage.chatId === null
   if (activeChatId && activeChatId.startsWith('chat_') && !newMessage.chatId && !newMessage.receiverId) {
     const chatId = Number(activeChatId.replace('chat_', ''));
     console.log(`🔧 Принудительно обновляю группу ${chatId} (защита)`);
@@ -715,20 +794,29 @@ socket.on('channel_deleted', ({ channelId }) => {
 socket.on('message_deleted', ({ messageId }) => {
   console.log(`🗑️ Сообщение ${messageId} удалено`);
   
-  setMessages(prev => 
-    (prev || []).map(m => {
+  setMessages(prev => {
+    // Проверяем, есть ли сообщение
+    const existingMsg = prev.find(m => m.id === Number(messageId));
+    
+    // Если сообщение уже удалено — просто возвращаем prev
+    if (existingMsg && existingMsg.isDeleted === true) {
+      return prev;
+    }
+    
+    return prev.map(m => {
       if (m.id === Number(messageId)) {
         return { 
           ...m, 
           text: "Сообщение удалено", 
           mediaUrl: null,
           mediaType: null,
-          isDeleted: true 
+          isDeleted: true,
+          reactions: [] // ✅ ОЧИЩАЕМ РЕАКЦИИ ПРИ УДАЛЕНИИ
         };
       }
       return m;
-    })
-  );
+    });
+  });
 });
 
 // === 5. СЛУШАТЕЛЬ ОБНОВЛЕНИЯ СТАТУСА ПРОЧТЕНИЯ ===
@@ -776,6 +864,12 @@ socket.on('thread_created', ({ thread, messageId, activeChatId }) => {
     
     return prev.map(msg => {
       if (msg.id === messageId) {
+        // ✅ НЕ ДОБАВЛЯЕМ КОММЕНТАРИИ К УДАЛЕННОМУ СООБЩЕНИЮ
+        if (msg.isDeleted === true) {
+          console.log('⚠️ Сообщение удалено, комментарий не добавляю');
+          return msg;
+        }
+        
         const threadExists = msg.threads?.some(t => t.id === thread.id);
         if (threadExists) {
           console.log('⚠️ Тред уже существует, пропускаем');
@@ -881,6 +975,11 @@ socket.on('reaction_updated', ({ messageId, reactions }) => {
   setMessages(prev =>
     prev.map(msg => {
       if (msg.id === messageId) {
+        // ✅ НЕ ОБНОВЛЯЕМ РЕАКЦИИ, ЕСЛИ СООБЩЕНИЕ УДАЛЕНО
+        if (msg.isDeleted === true) {
+          console.log(`⚠️ Сообщение ${messageId} удалено, реакции не обновляю`);
+          return msg;
+        }
         return {
           ...msg,
           reactions: reactions
@@ -1392,7 +1491,7 @@ const handleSelectChat = async (chatId, chatData = null) => {
   if (!stringChatId.startsWith('chat_') && !stringChatId.startsWith('channel_') && !stringChatId.startsWith('user_')) {
     finalChatId = `chat_${stringChatId}`;
   }
-  
+  console.log('🔗 [App] Переключение на чат:', finalChatId);
   // ✅ ПОДПИСЫВАЕМСЯ НА КОМНАТУ
   if (socketRef.current && socketRef.current.connected) {
     socketRef.current.emit('join_chat', finalChatId);
@@ -1753,6 +1852,7 @@ const chatsWithMessages = chats.map(chat => {
           chatsProp={chats}           
           groupChatsProp={groupChats} // групповые чаты
           channelsProp={channels}  
+          onSelectChat={handleSelectChat}
         />
 
         <ProfilePanel 
