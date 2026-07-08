@@ -270,63 +270,66 @@ export default function Sidebar({
               <span className="text-[9px] text-zinc-500">({groupChats.length})</span>
             </div>
             {groupChats.map((chat) => {
-              if (!chat) return null;
-              
-              const isActive = activeChatId === chat.id;
-              const lastMessage = chat.lastMessage || null;
-              const unreadCount = unreadCounts[chat.id] || 0;
-              
-              return (
-                <button
-                  key={`group_chat_${chat.id}`}
-                  type="button"
-                  onClick={() => {
-                    if (typeof onSelectChat === 'function') {
-                      onSelectChat(chat.id);
-                    }
-                    if (unreadCount > 0 && onMarkAsRead) {
-                      onMarkAsRead('chat', chat.id.replace('chat_', ''));
-                    }
-                  }}
-                  className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
-                    isActive 
-                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
-                      : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
-                  }`}
-                >
-                  <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm relative">
-                    {chat.avatar || '💬'}
-                    {chat.members && chat.members.length > 0 && (
-                      <span className="absolute -bottom-0.5 -right-0.5 text-[8px] bg-zinc-800 dark:bg-zinc-700 text-white rounded-full px-1 min-w-[14px] h-[14px] flex items-center justify-center border border-white dark:border-zinc-900">
+    if (!chat) return null;
+    
+    const isActive = activeChatId === chat.id;
+    const lastMessage = chat.lastMessage || null;
+    
+    // ✅ ПРАВИЛЬНО ПОЛУЧАЕМ unreadCount
+    const chatId = chat.id?.toString() || `chat_${chat.dbId || chat.id}`;
+    const unreadCount = unreadCounts[chatId] || 0;
+    
+    return (
+        <button
+            key={`group_chat_${chat.id}`}
+            type="button"
+            onClick={() => {
+                if (typeof onSelectChat === 'function') {
+                    onSelectChat(chat.id);
+                }
+                if (unreadCount > 0 && onMarkAsRead) {
+                    onMarkAsRead('chat', chat.id.replace('chat_', ''));
+                }
+            }}
+            className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
+                isActive 
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
+                    : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
+            }`}
+        >
+            <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm relative">
+                {chat.avatar || '💬'}
+                {chat.members && chat.members.length > 0 && (
+                    <span className="absolute -bottom-0.5 -right-0.5 text-[8px] bg-zinc-800 dark:bg-zinc-700 text-white rounded-full px-1 min-w-[14px] h-[14px] flex items-center justify-center border border-white dark:border-zinc-900">
                         {chat.members.length}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-<div className="flex justify-between items-baseline mb-0.5">
-  <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
-    {chat.name}
-  </h3>
-  {lastMessage && (
-    <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
-      {formatMsgTime(lastMessage.createdAt)}
-    </span>
-  )}
-</div>
-                    <div className="flex justify-between items-center gap-2">
-                      <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
-                        {lastMessage 
-                          ? lastMessage.isDeleted ? '🚫 Сообщение удалено' : lastMessage.text || 'Медиафайл'
-                          : 'Нет сообщений'}
-                      </p>
-                      {unreadCount > 0 && (
-                        <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0">
-                          {unreadCount}
+                    </span>
+                )}
+            </div>
+            <div className="flex-1 min-w-0">
+                <div className="flex justify-between items-baseline mb-0.5">
+                    <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
+                        {chat.name}
+                    </h3>
+                    {lastMessage && (
+                        <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
+                            {formatMsgTime(lastMessage.createdAt)}
                         </span>
-                      )}
-                    </div>
-                  </div>
-                </button>
+                    )}
+                </div>
+                <div className="flex justify-between items-center gap-2">
+                    <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
+                        {lastMessage 
+                            ? lastMessage.isDeleted ? '🚫 Сообщение удалено' : lastMessage.text || 'Медиафайл'
+                            : 'Нет сообщений'}
+                    </p>
+                    {unreadCount > 0 && (
+                        <span className="bg-emerald-500 text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0">
+                            {unreadCount}
+                        </span>
+                    )}
+                </div>
+            </div>
+        </button>
               );
             })}
           </>

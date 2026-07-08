@@ -520,8 +520,13 @@ if (newMessage.channelId) {
 if (newMessage.chatId) {
     console.log(`📌 Обновляю lastMessage для группы ${newMessage.chatId}`);
     setGroupChats(prev => prev.map(chat => {
-        // Сравниваем по dbId или id
-        const chatId = chat.dbId || chat.id?.replace('chat_', '');
+        // ✅ БЕЗОПАСНО ПОЛУЧАЕМ ID
+        let chatId = chat.dbId || chat.id;
+        // Если chat.id — строка с префиксом, убираем его
+        if (typeof chatId === 'string' && chatId.startsWith('chat_')) {
+            chatId = chatId.replace('chat_', '');
+        }
+        // Приводим к числу для сравнения
         if (Number(chatId) === Number(newMessage.chatId)) {
             console.log(`✅ Обновляю lastMessage для чата: ${chat.name}`);
             return { ...chat, lastMessage: newMessage };
@@ -583,9 +588,17 @@ socket.on('channel_created', (newChannel) => {
 // === СЛУШАТЕЛЬ СОЗДАНИЯ ГРУППОВОГО ЧАТА ===
 socket.on('chat_created', (newChat) => {
     console.log('👥 Создан новый групповой чат:', newChat);
+    
+    // ✅ НОРМАЛИЗУЕМ ID ДЛЯ НОВОГО ЧАТА
+    const normalizedChat = {
+        ...newChat,
+        id: `chat_${newChat.id}`,  // ← ГЛАВНОЕ!
+        dbId: newChat.id
+    };
+    
     setGroupChats(prev => {
-        if (prev.some(ch => ch.id === newChat.id)) return prev;
-        return [...prev, newChat];
+        if (prev.some(ch => ch.id === normalizedChat.id)) return prev;
+        return [...prev, normalizedChat];
     });
     
     // ✅ ПОДПИСЫВАЕМСЯ НА НОВЫЙ ЧАТ
@@ -725,17 +738,87 @@ socket.on('thread_created', ({ thread, messageId, activeChatId }) => {
   });
 });
 
+
 // === СЛУШАТЕЛЬ УДАЛЕНИЯ ГРУППОВОГО ЧАТА ===
 socket.on('chat_deleted', ({ chatId }) => {
-  console.log(`🗑️ Групповой чат ${chatId} удален`);
-  
-  setGroupChats(prev => prev.filter(ch => ch.dbId !== chatId && ch.id !== `chat_${chatId}`));
-  
-  // ✅ ЕСЛИ ЭТОТ ЧАТ АКТИВЕН - ЗАКРЫВАЕМ ЕГО
-  if (activeChatId === `chat_${chatId}`) {
-    setActiveChatId(null);
-    setActiveChatData(null);
-  }
+    console.log(`🗑️ Групповой чат ${chatId} удален`);
+    
+    // ✅ ВСЕГДА ЗАКРЫВАЕМ ПРОФИЛЬ
+    setIsProfileOpen(false);
+    
+    // ✅ ЕСЛИ ЭТОТ ЧАТ АКТИВЕН - СБРАСЫВАЕМ
+    if (activeChatId === `chat_${chatId}`) {
+        setActiveChatId(null);
+        setActiveChatData(null);
+        setMessages([]);
+    }
+    
+    setGroupChats(prev => prev.filter(ch => ch.dbId !== chatId && ch.id !== `chat_${chatId}`));
+});
+
+// === СЛУШАТЕЛЬ УДАЛЕНИЯ КАНАЛА ===
+socket.on('channel_deleted', ({ channelId }) => {
+    console.log(`🗑️ Канал ${channelId} удален`);
+    
+    // ✅ ВСЕГДА ЗАКРЫВАЕМ ПРОФИЛЬ
+    setIsProfileOpen(false);
+    
+    // ✅ ЕСЛИ ЭТОТ КАНАЛ АКТИВЕН - СБРАСЫВАЕМ
+    if (activeChatId === `channel_${channelId}`) {
+        setActiveChatId(null);
+        setActiveChatData(null);
+        setMessages([]);
+    }
+    
+    setChannels(prev => prev.filter(ch => ch.id !== channelId));
+});
+
+// === СЛУШАТЕЛЬ УДАЛЕНИЯ КАНАЛА ===
+socket.on('channel_deleted', ({ channelId }) => {
+    console.log(`🗑️ Канал ${channelId} удален`);
+    
+    // ✅ ЕСЛИ ЭТОТ КАНАЛ АКТИВЕН - ЗАКРЫВАЕМ ЕГО
+    if (activeChatId === `channel_${channelId}`) {
+        console.log('🔴 Активный канал удален, сбрасываю...');
+        setIsProfileOpen(false);  // ✅ ЗАКРЫВАЕМ ПРОФИЛЬ
+        setActiveChatId(null);
+        setActiveChatData(null);
+        setMessages([]);
+    }
+    
+    setChannels(prev => prev.filter(ch => ch.id !== channelId));
+});
+
+// === СЛУШАТЕЛЬ УДАЛЕНИЯ КАНАЛА ===
+socket.on('channel_deleted', ({ channelId }) => {
+    console.log(`🗑️ Канал ${channelId} удален`);
+    
+    // ✅ СНАЧАЛА ПРОВЕРЯЕМ, БЫЛ ЛИ ЭТОТ КАНАЛ АКТИВЕН
+    if (activeChatId === `channel_${channelId}`) {
+        console.log('🔴 Активный канал удален, сбрасываю...');
+        setIsProfileOpen(false);  // ✅ ПЕРВЫМ ДЕЛОМ ЗАКРЫВАЕМ ПРОФИЛЬ
+        setActiveChatId(null);
+        setActiveChatData(null);
+        setMessages([]);
+    }
+    
+    setChannels(prev => prev.filter(ch => ch.id !== channelId));
+});
+
+// === СЛУШАТЕЛЬ УДАЛЕНИЯ КАНАЛА ===
+socket.on('channel_deleted', ({ channelId }) => {
+    console.log(`🗑️ Канал ${channelId} удален`);
+    
+    // ✅ СНАЧАЛА ПРОВЕРЯЕМ, БЫЛ ЛИ ЭТОТ КАНАЛ АКТИВЕН
+    if (activeChatId === `channel_${channelId}`) {
+        console.log('🔴 Активный канал удален, сбрасываю...');
+        setActiveChatId(null);
+        setActiveChatData(null);
+        setMessages([]);
+        setIsProfileOpen(false);  // ✅ ЭТА СТРОКА ДОЛЖНА БЫТЬ!
+    }
+    
+    setChannels(prev => prev.filter(ch => ch.id !== channelId));
 });
 
 // === СЛУШАТЕЛЬ ОБНОВЛЕНИЯ РЕАКЦИЙ ===
@@ -800,66 +883,84 @@ socket.on('chat_updated', (data) => {
 
 // === СЛУШАТЕЛЬ ОБНОВЛЕНИЯ НЕПРОЧИТАННЫХ ===
 socket.on('unread_updated', (data) => {
-  console.log(`📊 Получено обновление непрочитанных:`, data);
-  
-  const { type, id, count } = data;
-  let chatKey;
-  
-  if (type === 'channel') {
-    chatKey = `channel_${id}`;
-  } else if (type === 'chat') {
-    chatKey = `chat_${id}`;
-  } else if (type === 'private') {
-    chatKey = `user_${id}`;
-  }
-  
-  if (!chatKey) return;
-
-  const updateKey = chatKey;
-  if (processingUpdates.current.has(updateKey)) {
-    console.log(`⚠️ Пропускаю дублирование для ${updateKey}`);
-    return;
-  }
-  processingUpdates.current.add(updateKey);
-  
-  // ✅ ОБНОВЛЯЕМ unreadCounts
-  setUnreadCounts(prev => {
-    const currentCount = prev[chatKey] || 0;
-    const newCount = currentCount + count;
+    console.log('🔴🔴🔴 unread_updated ПОЛУЧЕН НА КЛИЕНТЕ:', data);
     
-    console.log(`📊 Увеличен счетчик для ${chatKey}: ${currentCount} + ${count} = ${newCount}`);
-    return {
-      ...prev,
-      [chatKey]: newCount
-    };
-  });
-  
-  // ✅ ДОБАВЛЯЕМ ОБНОВЛЕНИЕ САЙДБАРА
-  if (type === 'channel') {
-    setChannels(prevChannels => 
-      prevChannels.map(channel => {
-        if (String(channel.id) === String(id)) {
-          const currentCount = channel.unreadCount || 0;
-          return { ...channel, unreadCount: currentCount + count };
-        }
-        return channel;
-      })
-    );
-  } else if (type === 'chat') {
+    const { type, id, count } = data;
+    let chatKey;
+    
+    if (type === 'channel') {
+        chatKey = `channel_${id}`;
+    } else if (type === 'chat') {
+        chatKey = `chat_${id}`;
+    } else if (type === 'private') {
+        chatKey = `user_${id}`;
+    }
+    
+    if (!chatKey) return;
+
+    const updateKey = chatKey;
+    if (processingUpdates.current.has(updateKey)) {
+        console.log(`⚠️ Пропускаю дублирование для ${updateKey}`);
+        return;
+    }
+    processingUpdates.current.add(updateKey);
+    
+    // ✅ ОБНОВЛЯЕМ unreadCounts
+    setUnreadCounts(prev => {
+        const currentCount = prev[chatKey] || 0;
+        const newCount = currentCount + count;
+        console.log(`📊 Увеличен счетчик для ${chatKey}: ${currentCount} + ${count} = ${newCount}`);
+        return {
+            ...prev,
+            [chatKey]: newCount
+        };
+    });
+    
+    // ✅ ДОБАВЛЯЕМ ОБНОВЛЕНИЕ САЙДБАРА
+    console.log(`🔍 Обновляю сайдбар для type=${type}, id=${id}`);
+    
+    if (type === 'channel') {
+        setChannels(prevChannels => 
+            prevChannels.map(channel => {
+                if (String(channel.id) === String(id)) {
+                    const currentCount = channel.unreadCount || 0;
+                    console.log(`📢 Обновляю канал ${channel.name}: ${currentCount} + ${count} = ${currentCount + count}`);
+                    return { ...channel, unreadCount: currentCount + count };
+                }
+                return channel;
+            })
+        );
+    } else if (type === 'chat') {
+    console.log(`👥 Обновляю групповой чат ${id}`);
     setGroupChats(prevChats => 
-      prevChats.map(chat => {
-        if (chat.id === `chat_${id}`) {
-          const currentCount = chat.unreadCount || 0;
-          return { ...chat, unreadCount: currentCount + count };
-        }
-        return chat;
-      })
-    );
-  }
-  
-  setTimeout(() => {
-    processingUpdates.current.delete(updateKey);
-  }, 300);
+        prevChats.map(chat => {
+            // ✅ НОРМАЛИЗУЕМ ID ДЛЯ СРАВНЕНИЯ
+            const chatId = chat.id?.toString() || `chat_${chat.dbId || chat.id}`;
+            const targetId = `chat_${id}`;
+            console.log(`   Сравниваю: ${chatId} === ${targetId}`);
+            if (chatId === targetId) {
+                const currentCount = chat.unreadCount || 0;
+                console.log(`   Обновляю ${chat.name}: ${currentCount} + ${count} = ${currentCount + count}`);
+                return { ...chat, unreadCount: currentCount + count };
+            }
+            return chat;
+        })
+        );
+    } else if (type === 'private') {
+        setChats(prevChats => 
+            prevChats.map(chat => {
+                if (chat.id === `user_${id}`) {
+                    const currentCount = chat.unreadCount || 0;
+                    return { ...chat, unreadCount: currentCount + count };
+                }
+                return chat;
+            })
+        );
+    }
+    
+    setTimeout(() => {
+        processingUpdates.current.delete(updateKey);
+    }, 300);
 });
 
 // === ДОБАВЛЕНИЕ УЧАСТНИКА В ГРУППОВОЙ ЧАТ ===
@@ -1070,6 +1171,40 @@ useEffect(() => {
   window.addEventListener('storage', handleStorageChange);
   return () => window.removeEventListener('storage', handleStorageChange);
 }, []);
+
+// ✅ ПРИНУДИТЕЛЬНЫЙ СБРОС ПРИ УДАЛЕНИИ ЧАТА (для групп)
+useEffect(() => {
+    if (activeChatId && activeChatId.startsWith('chat_')) {
+        const chatId = activeChatId.replace('chat_', '');
+        const exists = groupChats.some(ch => 
+            ch.id === activeChatId || ch.dbId === parseInt(chatId)
+        );
+        if (!exists && groupChats.length > 0) {
+            console.log('🔴 Групповой чат не найден в списке, сбрасываю...');
+            setActiveChatId(null);
+            setActiveChatData(null);
+            setMessages([]);
+            setIsProfileOpen(false);
+        }
+    }
+}, [groupChats, activeChatId]);
+
+// ✅ ПРИНУДИТЕЛЬНЫЙ СБРОС ПРИ УДАЛЕНИИ КАНАЛА
+useEffect(() => {
+    if (activeChatId && activeChatId.startsWith('channel_')) {
+        const channelId = activeChatId.replace('channel_', '');
+        const exists = channels.some(ch => ch.id === parseInt(channelId));
+        if (!exists && channels.length > 0) {
+            console.log('🔴 Канал не найден в списке, сбрасываю...');
+            setActiveChatId(null);
+            setActiveChatData(null);
+            setMessages([]);
+            setIsProfileOpen(false);
+        }
+    }
+}, [channels, activeChatId]);;
+
+
 
   const formatMsgTime = (dateString) => {
     if (!dateString) return '';
@@ -1495,6 +1630,9 @@ const activeChat = {
   const filteredChats = chatsWithMessages.filter(c => 
     c && c.name && c.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const filteredGroupChats = groupChats.filter(c => 
+    c && c.name && c.name.toLowerCase().includes(searchQuery.toLowerCase())
+);
 
   return (
     <div className="bg-zinc-100 dark:bg-zinc-900 text-zinc-900 dark:text-white h-screen flex justify-center items-center font-sans antialiased transition-colors duration-300">
@@ -1518,6 +1656,8 @@ const activeChat = {
           onCreateGroupChat={handleCreateGroupChat}
           unreadCounts={unreadCounts}
           onMarkAsRead={markAsRead}
+          groupChats={filteredGroupChats}
+          searchQuery={searchQuery}
         />
         
         <ChatArea 

@@ -243,81 +243,108 @@ const isCreator = activeChat.creatorId === currentUserId;
  
 // Удалить канал
 const handleDeleteChannel = async () => {
-  if (!confirm(`Вы уверены, что хотите удалить канал "${activeChat?.name}"? Это действие необратимо!`)) {
-    return;
-  }
-
-  try {
-    const token = localStorage.getItem('token');
-    const channelId = activeChat.id.replace('channel_', '');
-    
-    console.log(`🗑️ Удаляем канал ${channelId}`);
-    
-    const response = await fetch(`http://localhost:5001/api/channels/${channelId}`, {
-      method: 'DELETE',
-      headers: { 
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Ошибка удаления канала');
+    // ✅ ПРОВЕРЯЕМ, ЧТО КАНАЛ ЕЩЕ СУЩЕСТВУЕТ
+    if (!activeChat || !activeChat.id) {
+        alert('❌ Канал уже удален или не существует');
+        onClose();  // ✅ ЗАКРЫВАЕМ ПРОФИЛЬ
+        return;
     }
     
-    const result = await response.json();
-    console.log('✅ Канал удален:', result);
-    
-    // ✅ Закрываем профиль
-    onClose();
-    
-    // ✅ НЕ перезагружаем страницу!
-    // Канал удалится из списка через сокет (channel_deleted)
-    // который уже есть в App.jsx
-    
-  } catch (error) {
-    console.error('❌ Ошибка удаления канала:', error);
-    alert('Не удалось удалить канал: ' + error.message);
-  }
+    if (!confirm(`Вы уверены, что хотите удалить канал "${activeChat?.name}"? Это действие необратимо!`)) {
+        return;
+    }
+
+    try {
+        const token = localStorage.getItem('token');
+        const channelId = activeChat.id.replace('channel_', '');
+        
+        console.log(`🗑️ Удаляем канал ${channelId}`);
+        
+        const response = await fetch(`http://localhost:5001/api/channels/${channelId}`, {
+            method: 'DELETE',
+            headers: { 
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        // ✅ ОБРАБАТЫВАЕМ 404
+        if (response.status === 404) {
+            console.log('❌ Канал уже удален');
+            alert('❌ Канал уже был удален');
+            onClose();  // ✅ ЗАКРЫВАЕМ ПРОФИЛЬ
+            return;
+        }
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Ошибка удаления канала');
+        }
+        
+        const result = await response.json();
+        console.log('✅ Канал удален:', result);
+        
+        // ✅ ЗАКРЫВАЕМ ПРОФИЛЬ
+        onClose();
+        
+    } catch (error) {
+        console.error('❌ Ошибка удаления канала:', error);
+        alert('Не удалось удалить канал: ' + error.message);
+        onClose();  // ✅ ЗАКРЫВАЕМ ПРОФИЛЬ ДАЖЕ ПРИ ОШИБКЕ
+    }
 };
 
 // Удалить групповой чат
 const handleDeleteChat = async () => {
-  if (!confirm(`Вы уверены, что хотите удалить чат "${activeChat?.name}"? Это действие необратимо!`)) {
-    return;
-  }
-
-  try {
-    const token = localStorage.getItem('token');
-    const chatId = activeChat.id.replace('chat_', '');
-    
-    console.log(`🗑️ Удаляем групповой чат ${chatId}`);
-    
-    const response = await fetch(`http://localhost:5001/api/chats/${chatId}`, {
-      method: 'DELETE',
-      headers: { 
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Ошибка удаления чата');
+    if (!activeChat || !activeChat.id) {
+        alert('❌ Чат уже удален или не существует');
+        onClose();
+        return;
     }
     
-    const result = await response.json();
-    console.log('✅ Групповой чат удален:', result);
-    
-    // Закрываем профиль
-    onClose();
-    
-  } catch (error) {
-    console.error('❌ Ошибка удаления группового чата:', error);
-    alert('Не удалось удалить чат: ' + error.message);
-  }
+    if (!confirm(`Вы уверены, что хотите удалить чат "${activeChat?.name}"? Это действие необратимо!`)) {
+        return;
+    }
+
+    try {
+        const token = localStorage.getItem('token');
+        const chatId = activeChat.id.replace('chat_', '');
+        
+        console.log(`🗑️ Удаляем групповой чат ${chatId}`);
+        
+        const response = await fetch(`http://localhost:5001/api/chats/${chatId}`, {
+            method: 'DELETE',
+            headers: { 
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (response.status === 404) {
+            alert('❌ Чат уже был удален');
+            onClose();
+            return;
+        }
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Ошибка удаления чата');
+        }
+        
+        const result = await response.json();
+        console.log('✅ Групповой чат удален:', result);
+        
+        // ✅ Закрываем профиль
+        onClose();
+        
+    } catch (error) {
+        console.error('❌ Ошибка удаления группового чата:', error);
+        alert('Не удалось удалить чат: ' + error.message);
+        onClose();
+    }
 };
+
+
 
   return (
     <div className="w-80 h-full bg-zinc-950 border-l border-zinc-800 flex flex-col animate-fade-in fixed right-0 top-0 z-50 md:relative md:z-0 shadow-2xl md:shadow-none">

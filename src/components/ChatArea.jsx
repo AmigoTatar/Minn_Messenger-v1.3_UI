@@ -605,10 +605,12 @@ const isCurrentChatTyping = localTypingUser && (
   })();
   /*console.log(`📦 РЕНДЕР: messages.length=${messages?.length || 0}, activeChatId=${activeChatId}`);
 console.log(`📦 messages:`, messages);*/
+
+
   return (
-    <div className={`flex-col flex-1 h-full bg-zinc-100 dark:bg-zinc-900 ${activeChatId ? 'flex' : 'hidden md:flex'}`}>
+      <div className={`flex-col flex-1 h-full bg-zinc-100 dark:bg-zinc-900 ${activeChatId ? 'flex' : 'hidden md:flex'}`}>
       {!activeChatId ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 p-4 text-center">
+        <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 p-4 text-center bg-zinc-100 dark:bg-zinc-900">
           <span className="text-4xl mb-2">💬</span>
           <p className="text-sm">Выберите чат, чтобы начать общение</p>
         </div>
