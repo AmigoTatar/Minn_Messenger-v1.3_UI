@@ -611,6 +611,59 @@ socket.on('chat_created', (newChat) => {
     }, 500);
 });
 
+// === ОБНОВЛЕНИЕ ПОЛЬЗОВАТЕЛЯ (имя, аватар) ===
+socket.on('user_updated', (data) => {
+    console.log('👤 Обновлён пользователь:', data);
+    
+    // ✅ ЕСЛИ ЭТО ТЕКУЩИЙ ПОЛЬЗОВАТЕЛЬ — ОБНОВЛЯЕМ ЛОКАЛЬНОГО USER
+    if (data.userId === user?.id) {
+        const updatedUser = { 
+            ...user, 
+            username: data.username, 
+            avatar: data.avatar 
+        };
+        setUser(updatedUser);
+        localStorage.setItem('user', JSON.stringify(updatedUser));
+        console.log('✅ Локальный пользователь обновлён:', updatedUser);
+    }
+    
+    // ✅ ОБНОВЛЯЕМ В СПИСКЕ ЧАТОВ (ОБЯЗАТЕЛЬНО!)
+    setChats(prevChats => prevChats.map(chat => {
+        // ✅ ПРОВЕРЯЕМ ПО dbId
+        if (chat.dbId === data.userId) {
+            console.log(`🔄 Обновляю аватарку для ${chat.name}: ${data.avatar}`);
+            return { 
+                ...chat, 
+                name: data.username, 
+                avatar: data.avatar || chat.avatar
+            };
+        }
+        return chat;
+    }));
+    
+    // ✅ ОБНОВЛЯЕМ В ГРУППОВЫХ ЧАТАХ
+    setGroupChats(prevGroupChats => prevGroupChats.map(group => {
+        if (group.members) {
+            const updatedMembers = group.members.map(member => {
+                if (member.userId === data.userId) {
+                    return { 
+                        ...member, 
+                        user: { 
+                            ...member.user, 
+                            username: data.username, 
+                            avatar: data.avatar 
+                        } 
+                    };
+                }
+                return member;
+            });
+            return { ...group, members: updatedMembers };
+        }
+        return group;
+    }));
+});
+
+
 
 // === ДОБАВЛЕНИЕ УЧАСТНИКА В КАНАЛ (ОДИН РАЗ, НА УРОВНЕ ВСЕХ ОБРАБОТЧИКОВ) ===
 socket.on('channel_member_added', (data) => {
@@ -1042,6 +1095,10 @@ socket.on('kicked_from_channel', (data) => {
       socket.off('user_status_change');
     };
   }, [user]);
+
+
+
+
 
   // Переключение комнат при смене чата
   useEffect(() => {
@@ -1605,27 +1662,32 @@ const activeChat = {
     }} apiBaseUrl={API_BASE_URL} />;
   }
 
-  const chatsWithMessages = chats.map(chat => {
+const chatsWithMessages = chats.map(chat => {
     let chatMessages = [];
 
     if (chat.id === "chat_general") {
-      chatMessages = messages.filter(m => m && m.receiverId === null && !m.channelId);
+        chatMessages = messages.filter(m => m && m.receiverId === null && !m.channelId);
     } else if (chat.id?.startsWith("user_")) {
-      const targetUserId = Number(chat.id.replace('user_', ''));
-      chatMessages = messages.filter(m => 
-        m && !m.channelId && (
-          (Number(m.senderId) === Number(user.id) && Number(m.receiverId) === targetUserId) ||
-          (Number(m.senderId) === targetUserId && Number(m.receiverId) === Number(user.id))
-        )
-      );
+        const targetUserId = Number(chat.id.replace('user_', ''));
+        chatMessages = messages.filter(m => 
+            m && !m.channelId && (
+                (Number(m.senderId) === Number(user.id) && Number(m.receiverId) === targetUserId) ||
+                (Number(m.senderId) === targetUserId && Number(m.receiverId) === Number(user.id))
+            )
+        );
     }
 
     const mappedMessages = chatMessages.map(m => 
-      m && m.text === "Сообщение удалено" ? { ...m, isDeleted: true } : m
+        m && m.text === "Сообщение удалено" ? { ...m, isDeleted: true } : m
     );
 
-    return { ...chat, messages: mappedMessages };
-  });
+    // ✅ СОХРАНЯЕМ АВАТАРКУ
+    return { 
+        ...chat, 
+        messages: mappedMessages,
+        avatar: chat.avatar || '👤'  // ← ДОБАВЬ ЭТУ СТРОКУ
+    };
+});
 
   const filteredChats = chatsWithMessages.filter(c => 
     c && c.name && c.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -1655,6 +1717,9 @@ const activeChat = {
           onCreateChannel={handleCreateChannel}
           onCreateGroupChat={handleCreateGroupChat}
           unreadCounts={unreadCounts}
+          user={user}
+          setUser={setUser}
+          onUpdateUser={setUser}
           onMarkAsRead={markAsRead}
           groupChats={filteredGroupChats}
           searchQuery={searchQuery}

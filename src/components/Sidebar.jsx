@@ -17,7 +17,10 @@ export default function Sidebar({
   onCreateChannel,
   onCreateGroupChat,
   unreadCounts = {},
-  onMarkAsRead
+  onMarkAsRead,
+  user, 
+  setUser,  
+  onUpdateUser
 }) {
   
   const { GENERAL, GENERAL_ALT } = CHAT_IDS;
@@ -29,6 +32,114 @@ export default function Sidebar({
   const [newGroupChatAvatar, setNewGroupChatAvatar] = useState('💬');
   const [selectedUsers, setSelectedUsers] = useState([]);
   const [allUsersForChat, setAllUsersForChat] = useState([]);
+  const [localAvatar, setLocalAvatar] = useState(user?.avatar || '👤');
+
+  // ==========================================
+// 👤 РЕДАКТИРОВАНИЕ ПРОФИЛЯ
+// ==========================================
+const [isEditingProfile, setIsEditingProfile] = useState(false);
+const [editName, setEditName] = useState('');
+
+
+
+const handleSaveProfile = async () => {
+    if (!editName.trim() || editName === user?.username) return;
+
+    try {
+        const token = localStorage.getItem('token');
+        const response = await fetch('http://localhost:5001/api/users/profile', {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ username: editName.trim() })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Ошибка обновления имени');
+        }
+
+        const data = await response.json();
+        console.log('✅ Имя обновлено:', data);
+
+        // Обновляем локального пользователя
+        const updatedUser = { ...user, username: data.user.username };
+        localStorage.setItem('user', JSON.stringify(updatedUser));
+        
+        // Передаём обновлённого пользователя в App
+        if (onUpdateUser) {
+            onUpdateUser(updatedUser);
+        }
+
+        setIsEditingProfile(false);
+        setEditName('');
+        
+      
+        
+    } catch (error) {
+        console.error('❌ Ошибка:', error);
+        alert('Не удалось изменить имя: ' + error.message);
+    }
+};
+
+// ==========================================
+// 📷 ЗАГРУЗКА АВАТАРКИ
+// ==========================================
+const handleAvatarUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Проверка размера (максимум 5 МБ)
+    if (file.size > 5 * 1024 * 1024) {
+        alert('❌ Файл слишком большой. Максимум 5 МБ.');
+        return;
+    }
+
+    // Проверка типа
+    if (!file.type.startsWith('image/')) {
+        alert('❌ Пожалуйста, выберите изображение');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('avatar', file);
+
+    try {
+        const token = localStorage.getItem('token');
+        const response = await fetch('http://localhost:5001/api/users/avatar', {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            body: formData
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Ошибка загрузки аватарки');
+        }
+
+        const data = await response.json();
+        console.log('✅ Аватарка обновлена:', data);
+
+        // Обновляем локального пользователя
+        const updatedUser = { ...user, avatar: data.user.avatar };
+        localStorage.setItem('user', JSON.stringify(updatedUser));
+        
+        if (onUpdateUser) {
+            onUpdateUser(updatedUser);
+        }
+
+    } catch (error) {
+        console.error('❌ Ошибка:', error);
+        alert('Не удалось загрузить аватарку: ' + error.message);
+    }
+    
+    // Очищаем инпут
+    e.target.value = '';
+};
 
   const formatMsgTime = (dateString) => {
     if (!dateString) return '';
@@ -95,41 +206,130 @@ export default function Sidebar({
     console.log('📊 unreadCounts изменился:', unreadCounts);
 }, [unreadCounts]);
 
+useEffect(() => {
+    if (user?.avatar) {
+        setLocalAvatar(user.avatar);
+    }
+}, [user]);
+
   return (
     <div className={`w-full md:w-80 h-full max-h-screen overflow-hidden border-r border-zinc-200 dark:border-zinc-800 flex flex-col bg-white dark:bg-zinc-950 transition-colors duration-300 ${activeChatId ? 'hidden md:flex' : 'flex'}`}>
       
-      <div className="p-4 space-y-3">
-        <div className="flex justify-between items-center">
-          <h1 className="text-xl font-bold text-zinc-800 dark:text-white">Чаты</h1>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setIsNewChannelModalOpen(true)}
-              className="p-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-emerald-600/20"
-              title="Создать канал"
-            >
-              📢+
-            </button>
-            <button
-              onClick={() => setIsNewGroupChatModalOpen(true)}
-              className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-blue-600/20"
-              title="Создать групповой чат"
-            >
-              👥+
-            </button>
-          </div>
+   <div className="p-4 space-y-3">
+    {/* ==========================================
+        👤 МОЙ ПРОФИЛЬ (аватар + имя)
+        ========================================== */}
+    <div className="flex items-center gap-3 p-2 rounded-xl bg-zinc-100 dark:bg-zinc-900/50 border border-zinc-200/50 dark:border-zinc-800/50">
+
+{console.log('🔍 Avatar path:', user?.avatar)}
+
+
+
+<div className="relative w-10 h-10 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center text-xl flex-shrink-0 overflow-hidden group">
+    <img 
+        src={`http://localhost:5001${localAvatar}`} 
+        alt="avatar" 
+        className="w-full h-full object-cover block"
+        style={{ display: 'block', width: '100%', height: '100%' }}
+    />
+    <label 
+        htmlFor="avatar-upload" 
+        className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer rounded-full"
+    >
+        <span className="text-white text-xs font-medium">📷</span>
+    </label>
+    <input
+        id="avatar-upload"
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleAvatarUpload}
+    />
+</div>
+
+
+        <div className="flex-1 min-w-0">
+            {isEditingProfile ? (
+                <div className="flex items-center gap-1">
+                    <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        className="flex-1 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-emerald-500 text-zinc-800 dark:text-white"
+                        placeholder="Новое имя"
+                        autoFocus
+                    />
+                    <button
+                        onClick={handleSaveProfile}
+                        disabled={!editName.trim() || editName === user?.username}
+                        className="px-2 py-1 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition"
+                    >
+                        💾
+                    </button>
+                    <button
+                        onClick={() => {
+                            setIsEditingProfile(false);
+                            setEditName('');
+                        }}
+                        className="px-2 py-1 text-xs font-medium bg-zinc-600 hover:bg-zinc-500 text-white rounded-lg transition"
+                    >
+                        ✕
+                    </button>
+                </div>
+            ) : (
+                <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium text-zinc-800 dark:text-white truncate">
+                        {user?.username || 'Пользователь'}
+                    </p>
+                    <button
+                        onClick={() => setIsEditingProfile(true)}
+                        className="text-xs text-zinc-400 hover:text-emerald-400 transition opacity-60 hover:opacity-100 flex-shrink-0"
+                        title="Изменить имя"
+                    >
+                        ✏️
+                    </button>
+                </div>
+            )}
+{user?.email && (
+    <p className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate">
+        {user.email}
+    </p>
+)}
         </div>
-        
-        <div className="relative">
-          <input 
+    </div>
+
+    {/* Заголовок и кнопки */}
+    <div className="flex justify-between items-center">
+        <h1 className="text-xl font-bold text-zinc-800 dark:text-white">Чаты</h1>
+        <div className="flex gap-2">
+            <button
+                onClick={() => setIsNewChannelModalOpen(true)}
+                className="p-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-emerald-600/20"
+                title="Создать канал"
+            >
+                📢+
+            </button>
+            <button
+                onClick={() => setIsNewGroupChatModalOpen(true)}
+                className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition shadow-md shadow-blue-600/20"
+                title="Создать групповой чат"
+            >
+                👥+
+            </button>
+        </div>
+    </div>
+    
+    <div className="relative">
+        <input 
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Поиск..."
             className="w-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200/50 dark:border-zinc-800 rounded-xl pl-9 pr-4 py-2 text-xs focus:outline-none focus:border-emerald-500 transition text-zinc-800 dark:text-white placeholder-zinc-400"
-          />
-          <span className="absolute left-3 top-2.5 text-xs text-zinc-400">🔍</span>
-        </div>
-      </div>
+        />
+        <span className="absolute left-3 top-2.5 text-xs text-zinc-400">🔍</span>
+    </div>
+</div>
 
       <div className="flex-1 overflow-y-auto no-scrollbar px-2 py-2 space-y-1">
         {/* Приватные чаты */}
@@ -157,14 +357,23 @@ export default function Sidebar({
             : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
         }`}
       >
-        <div className="relative mr-3 shrink-0">
-          <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl shadow-sm">
-            {chat.avatar || '👤'}
-          </div>
-          {chat.isOnline && chat.id !== 'chat_general' && !chat.id?.startsWith('channel_') && (
-            <span className="absolute bottom-0 right-0 block h-3 w-3 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 ring-1 ring-emerald-500/20 animate-pulse" />
-          )}
-        </div>
+<div className="relative mr-3 shrink-0">
+    <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl shadow-sm overflow-hidden">
+        {chat.avatar && chat.avatar.startsWith('/uploads/') ? (
+            <img 
+                src={`http://localhost:5001${chat.avatar}`} 
+                alt="avatar" 
+                className="w-full h-full object-cover"
+            />
+        ) : (
+            <span>{chat.avatar || '👤'}</span>
+        )}
+    </div>
+    {chat.isOnline && chat.id !== 'chat_general' && !chat.id?.startsWith('channel_') && (
+        <span className="absolute bottom-0 right-0 block h-3 w-3 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 ring-1 ring-emerald-500/20 animate-pulse" />
+    )}
+</div>
+
         <div className="flex-1 min-w-0">
           <div className="flex justify-between items-baseline mb-0.5">
             <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
