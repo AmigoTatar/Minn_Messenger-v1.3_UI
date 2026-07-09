@@ -22,6 +22,7 @@ export default function Sidebar({
   onMarkAsRead,
   user, 
   setUser,  
+  groupChatsVersion = 0,
   onUpdateUser
 }) {
   
@@ -273,6 +274,18 @@ const handleAvatarUpload = async (e) => {
     console.log('📊 unreadCounts изменился:', unreadCounts);
 }, [unreadCounts]);
 
+
+// В Sidebar.jsx, после других useEffect
+useEffect(() => {
+    console.log('🔄 [Sidebar] groupChats изменился, количество:', groupChats.length);
+    console.log('🔄 [Sidebar] groupChats:', groupChats);
+}, [groupChats]);
+
+useEffect(() => {
+    console.log('🔄 [Sidebar] groupChatsVersion изменился:', groupChatsVersion);
+    console.log('🔄 [Sidebar] groupChats:', groupChats);
+}, [groupChatsVersion, groupChats]);
+
 useEffect(() => {
     if (user?.avatar) {
         setLocalAvatar(user.avatar);
@@ -293,20 +306,22 @@ useEffect(() => {
 
 
 <div className="relative w-10 h-10 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center text-xl flex-shrink-0 overflow-hidden group">
-{localAvatar && localAvatar.startsWith('/uploads/') ? (
-    <img 
-        src={getAvatarUrl(localAvatar)} 
-        alt="avatar" 
-        className="w-full h-full object-cover block"
-        style={{ display: 'block', width: '100%', height: '100%' }}
-        onError={(e) => {
-            e.target.style.display = 'none';
-            e.target.parentElement.textContent = user?.username?.[0]?.toUpperCase() || '👤';
-        }}
-    />
-) : (
-    <span className="text-xl">{localAvatar || '👤'}</span>
-)}
+    {localAvatar && typeof localAvatar === 'string' && localAvatar.startsWith('/uploads/') ? (
+        <img 
+            src={getAvatarUrl(localAvatar)} 
+            alt="avatar" 
+            className="w-full h-full object-cover"
+            onError={(e) => {
+                e.target.style.display = 'none';
+                const parent = e.target.parentElement;
+                if (parent) {
+                    parent.textContent = user?.username?.[0]?.toUpperCase() || '👤';
+                }
+            }}
+        />
+    ) : (
+        <span className="text-xl">{localAvatar || '👤'}</span>
+    )}
     <label 
         htmlFor="avatar-upload" 
         className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer rounded-full"
@@ -406,264 +421,287 @@ useEffect(() => {
     </div>
 </div>
 
-      <div className="flex-1 overflow-y-auto no-scrollbar px-2 py-2 space-y-1">
-        {/* Приватные чаты */}
-{Array.isArray(chats) && chats
-  .filter(chat => chat.id !== GENERAL && chat.id !== GENERAL_ALT)
-  .map((chat, index) => {
-    const isActive = chat.id === activeChatId;
-    const lastMessage = chat.lastMessage || null;  // ✅ ДОБАВЬ ЭТУ СТРОКУ
-    const unreadCount = unreadCounts[chat.id] || 0;
-
-    return (
-      <button
-        key={`${chat.id}_${index}`}
-        onClick={() => {
-          if (typeof onSelectChat === 'function') {
-            onSelectChat(chat.id);
-          }
-          if (unreadCount > 0 && onMarkAsRead) {
-            onMarkAsRead('private', chat.id.replace('user_', ''));
-          }
-        }}
-        className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left relative ${
-          isActive 
-            ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
-            : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
-        }`}
-      >
-<div className="relative mr-3 shrink-0">
-    <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl shadow-sm overflow-hidden">
-        {chat.avatar && typeof chat.avatar === 'string' && chat.avatar.startsWith('/uploads/') ? (
-            <img 
-                src={getAvatarUrl(chat.avatar)} 
-                alt={chat.name} 
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                    e.target.style.display = 'none';
-                    e.target.parentElement.textContent = chat.name?.[0]?.toUpperCase() || '👤';
-                }}
-            />
-        ) : (
-            <span>{chat.avatar || '👤'}</span>
-        )}
-    </div>
-    {chat.isOnline && chat.id !== 'chat_general' && !chat.id?.startsWith('channel_') && (
-        <span className="absolute bottom-0 right-0 block h-3 w-3 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 ring-1 ring-emerald-500/20 animate-pulse" />
-    )}
-</div>
-
-<div className="flex-1 min-w-0">
-  <div className="flex justify-between items-baseline mb-0.5">
-    <div className="flex items-center gap-1">
-      <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
-        {chat.name}
-      </h3>
-      {/* 🔕 ИНДИКАТОР "НЕ БЕСПОКОИТЬ" */}
-      {chat.muted && (
-        <span className="text-[10px] text-amber-500 flex-shrink-0" title="Уведомления отключены">🔕</span>
-      )}
-    </div>
-    {lastMessage && (
-      <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
-        {formatMsgTime(lastMessage.createdAt)}
-      </span>
-    )}
-  </div>
-
-
-          <div className="flex justify-between items-center gap-2">
-            <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
-              {lastMessage 
-                ? lastMessage.isDeleted 
-                  ? '🚫 Сообщение удалено' 
-                  : lastMessage.mediaType === 'image' 
-                    ? '🖼️ Фотография' 
-                    : lastMessage.mediaType === 'audio' 
-                      ? '🎙️ Голосовое сообщение' 
-                      : lastMessage.text || 'Медиафайл'
-                : 'Нет сообщений'}
-            </p>
-{unreadCount > 0 && (
-  <span className={`text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0 ${
-    chat.muted ? 'bg-gray-500' : 'bg-emerald-500'
-  }`}>
-    {unreadCount}
-  </span>
-)}
-          </div>
-        </div>
-      </button>
-    );
-  })}
-
-        {/* Каналы */}
-{Array.isArray(channels) && channels.map((channelItem, index) => {
-  if (!channelItem) return null;
-  
-  const isChannelActive = activeChatId === `channel_${channelItem.id}`;
-  const unreadCount = unreadCounts[`channel_${channelItem.id}`] || 0;
-  const lastMessage = channelItem.lastMessage || null;
-  
-  return (
-    <button
-      key={`sidebar_chan_${channelItem.id}_${index}`}
-      type="button"
-      onClick={() => {
-        if (typeof onSelectChat === 'function') {
-          onSelectChat(`channel_${channelItem.id}`);
-        }
-        if (unreadCount > 0 && onMarkAsRead) {
-          onMarkAsRead('channel', channelItem.id);
-        }
-      }}
-      className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
-        isChannelActive 
-          ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
-          : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
-      }`}
-    >
-     <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm overflow-hidden">
-    {channelItem.avatar && channelItem.avatar.startsWith('/uploads/') ? (
-        <img 
-            src={getAvatarUrl(channelItem.avatar)} 
-            alt={channelItem.name} 
-            className="w-full h-full object-cover"
-            onError={(e) => {
-                e.target.style.display = 'none';
-                e.target.parentElement.textContent = channelItem.name?.[0]?.toUpperCase() || '📢';
-            }}
-        />
-    ) : (
-        <span>{channelItem.avatar || '📢'}</span>
-    )}
-</div>
-<div className="flex-1 min-w-0">
-  <div className="flex justify-between items-baseline mb-0.5">
-    <div className="flex items-center gap-1">
-      <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
-        {channelItem.name}
-      </h3>
-      {/* 🔕 ИНДИКАТОР "НЕ БЕСПОКОИТЬ" */}
-      {channelItem.muted && (
-        <span className="text-[10px] text-amber-500 flex-shrink-0" title="Уведомления отключены">🔕</span>
-      )}
-    </div>
-    {lastMessage && (
-      <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
-        {formatMsgTime(lastMessage.createdAt)}
-      </span>
-    )}
-  </div>
-
-
-        <div className="flex justify-between items-center gap-2">
-<p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
-  {lastMessage 
-    ? lastMessage.isDeleted 
-      ? '🚫 Сообщение удалено' 
-      : lastMessage.mediaType === 'image' 
-        ? '🖼️ Фотография' 
-        : lastMessage.mediaType === 'audio' 
-          ? '🎙️ Голосовое сообщение' 
-          : lastMessage.text || 'Медиафайл'
-    : '📢 Канал'}
-</p>
-         {unreadCount > 0 && (
-  <span className={`text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0 ${
-    channelItem.muted ? 'bg-gray-500' : 'bg-emerald-500'
-  }`}>
-    {unreadCount}
-  </span>
-)}
-        </div>
-      </div>
-    </button>
-  );
-})}
-
-        {/* Групповые чаты */}
-        {Array.isArray(groupChats) && groupChats.length > 0 && (
-          <>
+   <div className="flex-1 overflow-y-auto no-scrollbar px-2 py-2 space-y-1">
+    
+    {/* ==========================================
+        👤 ПРИВАТНЫЕ ЧАТЫ
+        ========================================== */}
+    {Array.isArray(chats) && chats.filter(chat => chat.id !== GENERAL && chat.id !== GENERAL_ALT).length > 0 && (
+        <>
             <div className="px-3 pt-3 pb-1 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
-              <span>👥 Групповые чаты</span>
-              <span className="text-[9px] text-zinc-500">({groupChats.length})</span>
+                <span>👤 Приватные чаты</span>
+                <span className="text-[9px] text-zinc-500">
+                    ({chats.filter(chat => chat.id !== GENERAL && chat.id !== GENERAL_ALT).length})
+                </span>
             </div>
-            {groupChats.map((chat) => {
-    if (!chat) return null;
-    
-    const isActive = activeChatId === chat.id;
-    const lastMessage = chat.lastMessage || null;
-    
-    // ✅ ПРАВИЛЬНО ПОЛУЧАЕМ unreadCount
-    const chatId = chat.id?.toString() || `chat_${chat.dbId || chat.id}`;
-    const unreadCount = unreadCounts[chatId] || 0;
-    
-    return (
-        <button
-            key={`group_chat_${chat.id}`}
-            type="button"
-            onClick={() => {
-                if (typeof onSelectChat === 'function') {
-                    onSelectChat(chat.id);
-                }
-                if (unreadCount > 0 && onMarkAsRead) {
-                    onMarkAsRead('chat', chat.id.replace('chat_', ''));
-                }
-            }}
-            className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
-                isActive 
-                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
-                    : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
-            }`}
-        >
-            <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm relative overflow-hidden">
-    {chat.avatar && chat.avatar.startsWith('/uploads/') ? (
-        <img 
-            src={getAvatarUrl(chat.avatar)} 
-            alt={chat.name} 
-            className="w-full h-full object-cover"
-            onError={(e) => {
-                e.target.style.display = 'none';
-                e.target.parentElement.textContent = chat.name?.[0]?.toUpperCase() || '💬';
-            }}
-        />
-    ) : (
-        <span>{chat.avatar || '💬'}</span>
+
+            {chats
+                .filter(chat => chat.id !== GENERAL && chat.id !== GENERAL_ALT)
+                .map((chat, index) => {
+                    const isActive = chat.id === activeChatId;
+                    const lastMessage = chat.lastMessage || null;
+                    const unreadCount = unreadCounts[chat.id] || 0;
+
+                    return (
+                        <button
+                            key={`${chat.id}_${index}`}
+                            onClick={() => {
+                                if (typeof onSelectChat === 'function') {
+                                    onSelectChat(chat.id);
+                                }
+                                if (unreadCount > 0 && onMarkAsRead) {
+                                    onMarkAsRead('private', chat.id.replace('user_', ''));
+                                }
+                            }}
+                            className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left relative ${
+                                isActive 
+                                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
+                                    : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
+                            }`}
+                        >
+                            <div className="relative mr-3 shrink-0">
+                                <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl shadow-sm overflow-hidden">
+                                    {chat.avatar && typeof chat.avatar === 'string' && chat.avatar.startsWith('/uploads/') ? (
+                                        <img 
+                                            src={getAvatarUrl(chat.avatar)} 
+                                            alt={chat.name} 
+                                            className="w-full h-full object-cover"
+                                            onError={(e) => {
+                                                e.target.style.display = 'none';
+                                                e.target.parentElement.textContent = chat.name?.[0]?.toUpperCase() || '👤';
+                                            }}
+                                        />
+                                    ) : (
+                                        <span>{chat.avatar || '👤'}</span>
+                                    )}
+                                </div>
+                                {chat.isOnline && chat.id !== 'chat_general' && !chat.id?.startsWith('channel_') && (
+                                    <span className="absolute bottom-0 right-0 block h-3 w-3 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 ring-1 ring-emerald-500/20 animate-pulse" />
+                                )}
+                            </div>
+
+                            <div className="flex-1 min-w-0">
+                                <div className="flex justify-between items-baseline mb-0.5">
+                                    <div className="flex items-center gap-1">
+                                        <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
+                                            {chat.name}
+                                        </h3>
+                                        {chat.muted && (
+                                            <span className="text-[10px] text-amber-500 flex-shrink-0" title="Уведомления отключены">🔕</span>
+                                        )}
+                                    </div>
+                                    {lastMessage && (
+                                        <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
+                                            {formatMsgTime(lastMessage.createdAt)}
+                                        </span>
+                                    )}
+                                </div>
+
+                                <div className="flex justify-between items-center gap-2">
+                                    <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
+                                        {lastMessage 
+                                            ? lastMessage.isDeleted 
+                                                ? '🚫 Сообщение удалено' 
+                                                : lastMessage.mediaType === 'image' 
+                                                    ? '🖼️ Фотография' 
+                                                    : lastMessage.mediaType === 'audio' 
+                                                        ? '🎙️ Голосовое сообщение' 
+                                                        : lastMessage.text || 'Медиафайл'
+                                            : 'Нет сообщений'}
+                                    </p>
+                                    {unreadCount > 0 && (
+                                        <span className={`text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0 ${
+                                            chat.muted ? 'bg-gray-500' : 'bg-emerald-500'
+                                        }`}>
+                                            {unreadCount}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                        </button>
+                    );
+                })}
+        </>
     )}
-                {chat.members && chat.members.length > 0 && (
-                    <span className="absolute -bottom-0.5 -right-0.5 text-[8px] bg-zinc-800 dark:bg-zinc-700 text-white rounded-full px-1 min-w-[14px] h-[14px] flex items-center justify-center border border-white dark:border-zinc-900">
-                        {chat.members.length}
-                    </span>
-                )}
+
+    {/* ==========================================
+        📢 КАНАЛЫ
+        ========================================== */}
+    {Array.isArray(channels) && channels.length > 0 && (
+        <>
+            <div className="px-3 pt-3 pb-1 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+                <span>📢 Каналы</span>
+                <span className="text-[9px] text-zinc-500">({channels.length})</span>
             </div>
 
-            <div className="flex-1 min-w-0">
-                <div className="flex justify-between items-baseline mb-0.5">
-                    <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
-                        {chat.name}
-                    </h3>
-                    {lastMessage && (
-                        <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
-                            {formatMsgTime(lastMessage.createdAt)}
-                        </span>
-                    )}
-                </div>
-
+            {channels.map((channelItem, index) => {
+                if (!channelItem) return null;
                 
-                <div className="flex justify-between items-center gap-2">
-                    <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
-                        {lastMessage 
-                            ? lastMessage.isDeleted ? '🚫 Сообщение удалено' : lastMessage.text || 'Медиафайл'
-                            : 'Нет сообщений'}
-                    </p>
-                 {unreadCount > 0 && (
-  <span className={`text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0 ${
-    chat.muted ? 'bg-gray-500' : 'bg-emerald-500'
-  }`}>
-    {unreadCount}
-  </span>
-)}
+                const isChannelActive = activeChatId === `channel_${channelItem.id}`;
+                const unreadCount = unreadCounts[`channel_${channelItem.id}`] || 0;
+                const lastMessage = channelItem.lastMessage || null;
+                
+                return (
+                    <button
+                        key={`sidebar_chan_${channelItem.id}_${index}`}
+                        type="button"
+                        onClick={() => {
+                            if (typeof onSelectChat === 'function') {
+                                onSelectChat(`channel_${channelItem.id}`);
+                            }
+                            if (unreadCount > 0 && onMarkAsRead) {
+                                onMarkAsRead('channel', channelItem.id);
+                            }
+                        }}
+                        className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
+                            isChannelActive 
+                                ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
+                                : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
+                        }`}
+                    >
+                        <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm overflow-hidden">
+                            {channelItem.avatar && channelItem.avatar.startsWith('/uploads/') ? (
+                                <img 
+                                    src={getAvatarUrl(channelItem.avatar)} 
+                                    alt={channelItem.name} 
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                        e.target.style.display = 'none';
+                                        e.target.parentElement.textContent = channelItem.name?.[0]?.toUpperCase() || '📢';
+                                    }}
+                                />
+                            ) : (
+                                <span>{channelItem.avatar || '📢'}</span>
+                            )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <div className="flex justify-between items-baseline mb-0.5">
+                                <div className="flex items-center gap-1">
+                                    <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
+                                        {channelItem.name}
+                                    </h3>
+                                    {channelItem.muted && (
+                                        <span className="text-[10px] text-amber-500 flex-shrink-0" title="Уведомления отключены">🔕</span>
+                                    )}
+                                </div>
+                                {lastMessage && (
+                                    <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
+                                        {formatMsgTime(lastMessage.createdAt)}
+                                    </span>
+                                )}
+                            </div>
+
+                            <div className="flex justify-between items-center gap-2">
+                                <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
+                                    {lastMessage 
+                                        ? lastMessage.isDeleted 
+                                            ? '🚫 Сообщение удалено' 
+                                            : lastMessage.mediaType === 'image' 
+                                                ? '🖼️ Фотография' 
+                                                : lastMessage.mediaType === 'audio' 
+                                                    ? '🎙️ Голосовое сообщение' 
+                                                    : lastMessage.text || 'Медиафайл'
+                                        : '📢 Канал'}
+                                </p>
+                                {unreadCount > 0 && (
+                                    <span className={`text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0 ${
+                                        channelItem.muted ? 'bg-gray-500' : 'bg-emerald-500'
+                                    }`}>
+                                        {unreadCount}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    </button>
+                );
+            })}
+        </>
+    )}
+
+    {/* ==========================================
+        👥 ГРУППОВЫЕ ЧАТЫ
+        ========================================== */}
+    {Array.isArray(groupChats) && groupChats.length > 0 && (
+        <>
+            <div className="px-3 pt-3 pb-1 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+                <span>👥 Групповые чаты</span>
+                <span className="text-[9px] text-zinc-500">({groupChats.length})</span>
+            </div>
+
+            {groupChats.map((chat) => {
+                if (!chat) return null;
+                
+                const isActive = activeChatId === chat.id;
+                const lastMessage = chat.lastMessage || null;
+                const membersCount = chat.members?.length || 0;
+                const chatKey = `group-${chat.id || chat.dbId}-${membersCount}`;
+                const chatId = chat.id?.toString() || `chat_${chat.dbId || chat.id}`;
+                const unreadCount = unreadCounts[chatId] || 0;
+                
+                return (
+                    <button
+                        key={chatKey}
+                        type="button"
+                        onClick={() => {
+                            if (typeof onSelectChat === 'function') {
+                                onSelectChat(chat.id);
+                            }
+                            if (unreadCount > 0 && onMarkAsRead) {
+                                onMarkAsRead('chat', chat.id.replace('chat_', ''));
+                            }
+                        }}
+                        className={`w-full flex items-center p-3 rounded-xl transition-all select-none text-left ${
+                            isActive 
+                                ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-400 border border-emerald-100/50 dark:border-emerald-900/30' 
+                                : 'hover:bg-zinc-100 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300'
+                        }`}
+                    >
+                        <div className="w-11 h-11 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center text-xl mr-3 shadow-sm relative overflow-hidden">
+                            {chat.avatar && chat.avatar.startsWith('/uploads/') ? (
+                                <img 
+                                    src={getAvatarUrl(chat.avatar)} 
+                                    alt={chat.name} 
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                        e.target.style.display = 'none';
+                                        e.target.parentElement.textContent = chat.name?.[0]?.toUpperCase() || '💬';
+                                    }}
+                                />
+                            ) : (
+                                <span>{chat.avatar || '💬'}</span>
+                            )}
+                            {chat.members && chat.members.length > 0 && (
+                                <span className="absolute -bottom-0.5 -right-0.5 text-[8px] bg-zinc-800 dark:bg-zinc-700 text-white rounded-full px-1 min-w-[14px] h-[14px] flex items-center justify-center border border-white dark:border-zinc-900">
+                                    {chat.members.length}
+                                </span>
+                            )}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                            <div className="flex justify-between items-baseline mb-0.5">
+                                <h3 className="font-semibold text-xs text-zinc-800 dark:text-zinc-100 truncate">
+                                    {chat.name}
+                                </h3>
+                                {lastMessage && (
+                                    <span className="text-[10px] text-zinc-400 whitespace-nowrap ml-1">
+                                        {formatMsgTime(lastMessage.createdAt)}
+                                    </span>
+                                )}
+                            </div>
+
+                            <div className="flex justify-between items-center gap-2">
+                                <p className="text-xs text-zinc-400 dark:text-zinc-500 truncate flex-1">
+                                    {lastMessage 
+                                        ? lastMessage.isDeleted ? '🚫 Сообщение удалено' : lastMessage.text || 'Медиафайл'
+                                        : 'Нет сообщений'}
+                                </p>
+                                {unreadCount > 0 && (
+                                    <span className={`text-white text-[10px] font-bold h-4 min-w-4 px-1 rounded-full flex items-center justify-center select-none shrink-0 ${
+                                        chat.muted ? 'bg-gray-500' : 'bg-emerald-500'
+                                    }`}>
+                                        {unreadCount}
+                                    </span>
+                                )}
                 </div>
             </div>
         </button>

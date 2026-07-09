@@ -123,50 +123,53 @@ export default function ChatArea({
   }, [activeChatId]);
 
   // ✅ ОБРАБОТЧИК ЗАКРЕПЛЕНИЯ ЧЕРЕЗ СОКЕТ
-  useEffect(() => {
+// ✅ ИСПРАВЛЕННЫЙ useEffect для закрепленных
+useEffect(() => {
     if (!socketRef?.current) return;
 
     const handleMessagePinned = (data) => {
-      console.log('📌 Событие message_pinned:', data);
-      
-      setMessages(prev => prev.map(msg => {
-        if (msg.id === data.messageId) {
-          return { ...msg, isPinned: data.isPinned };
-        }
-        return msg;
-      }));
+        console.log('📌 Событие message_pinned:', data);
+        
+        setMessages(prev => prev.map(msg => {
+            if (msg.id === data.messageId) {
+                return { ...msg, isPinned: data.isPinned };
+            }
+            return msg;
+        }));
 
-      fetchPinnedMessages();
+        fetchPinnedMessages();
     };
 
     socketRef.current.on('message_pinned', handleMessagePinned);
 
     return () => {
-      socketRef.current?.off('message_pinned', handleMessagePinned);
+        socketRef.current?.off('message_pinned', handleMessagePinned);
     };
-  }, [socketRef]);
+}, [socketRef?.current]); // ✅ используем socketRef?.current вместо socketRef
+
 
   // ✅ ОБРАБОТЧИК РЕДАКТИРОВАНИЯ ЧЕРЕЗ СОКЕТ
-  useEffect(() => {
-    if (!socketRef?.current) return;
+useEffect(() => {
+  if (!socketRef?.current) return;
 
-    const handleMessageEdited = (data) => {
-      console.log('✏️ Событие message_edited:', data);
-      
-      setMessages(prev => prev.map(msg => {
-        if (msg.id === data.messageId) {
-          return { ...msg, text: data.text, edited: true };
-        }
-        return msg;
-      }));
-    };
+ const handleMessageEdited = (data) => {
+  console.log('✏️ Событие message_edited:', data);
+  
+  setMessages(prev => prev.map(msg => {
+    // ✅ ЗАЩИТА: НЕ ОБНОВЛЯЕМ ЕСЛИ УДАЛЕНО
+    if (msg.id === data.messageId && msg.isDeleted !== true) {
+      return { ...msg, text: data.text, edited: true };
+    }
+    return msg;
+  }));
+};
 
-    socketRef.current.on('message_edited', handleMessageEdited);
+  socketRef.current.on('message_edited', handleMessageEdited);
 
-    return () => {
-      socketRef.current?.off('message_edited', handleMessageEdited);
-    };
-  }, [socketRef]);
+  return () => {
+    socketRef.current?.off('message_edited', handleMessageEdited);
+  };
+}, [socketRef]);
 
   // ✅ ФУНКЦИЯ ЗАКРЕПЛЕНИЯ
   const handlePinMessage = async (messageId) => {
@@ -205,6 +208,40 @@ export default function ChatArea({
       alert('Не удалось закрепить сообщение: ' + error.message);
     }
   };
+
+  // ✅ СЛУШАТЕЛЬ УДАЛЕНИЯ СООБЩЕНИЙ
+useEffect(() => {
+    if (!socketRef?.current) return;
+
+    const handleMessageDeleted = (data) => {
+        console.log('🗑️ [ChatArea] Получено событие message_deleted:', data);
+        
+        // ✅ ОБНОВЛЯЕМ ЛОКАЛЬНЫЙ СТЕЙТ СООБЩЕНИЙ
+        setMessages(prev => {
+            return prev.map(msg => {
+                if (msg.id === data.messageId) {
+                    return {
+                        ...msg,
+                        text: "Сообщение удалено",
+                        mediaUrl: null,
+                        mediaType: null,
+                        isDeleted: true,
+                        isForwarded: false,
+                        reactions: [],
+                        threads: []
+                    };
+                }
+                return msg;
+            });
+        });
+    };
+
+    socketRef.current.on('message_deleted', handleMessageDeleted);
+
+    return () => {
+        socketRef.current?.off('message_deleted', handleMessageDeleted);
+    };
+}, [socketRef, setMessages]);
 
   // ✅ ФУНКЦИЯ РЕДАКТИРОВАНИЯ СООБЩЕНИЯ
   const handleEditMessage = async () => {
@@ -894,42 +931,47 @@ if (distanceFromBottom < 50 && onMarkAsRead && activeChatId && !isMarkingRef.cur
             )}
 
             {Array.isArray(messages) && messages.length > 0 ? (
-              messages.map((msg, index) => {
-                if (!msg) return null;
-                
-                const stringChatId = activeChatId ? activeChatId.toString() : '';
-                let shouldShow = false;
 
-                if (stringChatId === 'chat_general') {
-                  shouldShow = !msg.receiverId && !msg.channelId;
-                } else if (stringChatId.startsWith('channel_')) {
-                  const channelNumId = Number(stringChatId.replace('channel_', ''));
-                  shouldShow = Number(msg.channelId) === channelNumId;
-                } else if (stringChatId.startsWith('user_')) {
-                  const targetUserId = Number(stringChatId.replace('user_', ''));
-                  const myId = currentUserId ? Number(currentUserId) : null;
-                  shouldShow = !msg.channelId && (
-                    (Number(msg.senderId) === myId && Number(msg.receiverId) === targetUserId) ||
-                    (Number(msg.senderId) === targetUserId && Number(msg.receiverId) === myId)
-                  );
-                } else if (stringChatId.startsWith('chat_')) {
-                  const chatDbId = Number(stringChatId.replace('chat_', ''));
-                  shouldShow = Number(msg.chatId) === chatDbId;
-                }
-                
-                if (!shouldShow) return null;
 
-                const uniqueKey = `msg-${msg.id || msg._id || index}-${msg.threads?.length || 0}-${index}`;
 
-                if (msg.isDeleted) {
-                  return (
-                    <div key={uniqueKey} className="flex w-full mb-2 justify-center">
-                      <div className="bg-zinc-100 dark:bg-zinc-800/50 text-zinc-400 dark:text-zinc-500 text-xs px-4 py-1.5 rounded-full border border-zinc-200 dark:border-zinc-700/50 select-none">
-                        🗑️ Сообщение удалено
-                      </div>
-                    </div>
-                  );
-                }
+messages.map((msg, index) => {
+    if (!msg) return null;
+    
+    const stringChatId = activeChatId ? activeChatId.toString() : '';
+    let shouldShow = false;
+
+    // ✅ ФИЛЬТРАЦИЯ ПО ТИПУ ЧАТА
+    if (stringChatId === 'chat_general') {
+        shouldShow = !msg.receiverId && !msg.channelId;
+    } else if (stringChatId.startsWith('channel_')) {
+        const channelNumId = Number(stringChatId.replace('channel_', ''));
+        shouldShow = Number(msg.channelId) === channelNumId;
+    } else if (stringChatId.startsWith('user_')) {
+        const targetUserId = Number(stringChatId.replace('user_', ''));
+        const myId = currentUserId ? Number(currentUserId) : null;
+        shouldShow = !msg.channelId && (
+            (Number(msg.senderId) === myId && Number(msg.receiverId) === targetUserId) ||
+            (Number(msg.senderId) === targetUserId && Number(msg.receiverId) === myId)
+        );
+    } else if (stringChatId.startsWith('chat_')) {
+        const chatDbId = Number(stringChatId.replace('chat_', ''));
+        shouldShow = Number(msg.chatId) === chatDbId;
+    }
+    
+    if (!shouldShow) return null;
+
+    const uniqueKey = `msg-${msg.id || msg._id || index}-${msg.threads?.length || 0}-${index}`;
+
+    // ✅ ПРОВЕРКА НА УДАЛЕНИЕ — ПЕРВАЯ!
+    if (msg.isDeleted) {
+        return (
+            <div key={uniqueKey} className="flex w-full mb-2 justify-center">
+                <div className="bg-zinc-100 dark:bg-zinc-800/50 text-zinc-400 dark:text-zinc-500 text-xs px-4 py-1.5 rounded-full border border-zinc-200 dark:border-zinc-700/50 select-none">
+                    🗑️ Сообщение удалено
+                </div>
+            </div>
+        );
+    }
                 
                 const currentFileUrl = msg.fileUrl || msg.imageUrl || msg.mediaUrl || msg.image || '';
                 const currentAudioUrl = msg.audioUrl || msg.voiceUrl || msg.audio || '';

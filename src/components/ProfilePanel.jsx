@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { getAvatarUrl } from '../utils/avatarUtils';
 import { API_BASE_URL } from '../config';
 
-export default function ProfilePanel({ activeChat, isOpen, onClose }) {
+export default function ProfilePanel({ activeChat, isOpen, onClose, socketRef, onMemberRemoved, onMemberAdded, onChatDeleted }) {
   const [activeTab, setActiveTab] = useState('media');
   const [members, setMembers] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -154,57 +154,63 @@ const fetchChatMembers = async () => {
     fetchUsers();
   }, [showAddMember, members]);
 
-// Добавить участника (для каналов И групповых чатов)
+
+
+/// Добавить участника (для каналов И групповых чатов)
 const handleAddMember = async () => {
-  if (!selectedUserId) return;
-  
-  try {
-    const token = localStorage.getItem('token');
-    
-    // Определяем тип чата
-    if (activeChat.type === 'channel') {
-      // Для каналов
-      const channelId = activeChat.id.replace('channel_', '');
-      const response = await fetch(`http://localhost:5001/api/channels/${channelId}/members`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ userId: parseInt(selectedUserId) })
-      });
-      
-      if (!response.ok) throw new Error('Ошибка добавления участника');
-      
-      const newMember = await response.json();
-      setMembers([...members, newMember]);
-      
-    } else if (activeChat.type === 'group') {
-      // Для групповых чатов
-      const chatId = activeChat.id.replace('chat_', '');
-      const response = await fetch(`http://localhost:5001/api/chats/${chatId}/members`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ userId: parseInt(selectedUserId) })
-      });
-      
-      if (!response.ok) throw new Error('Ошибка добавления участника в группу');
-      
-      const newMember = await response.json();
-      setMembers([...members, newMember]);
-    }
-    
-    setShowAddMember(false);
-    setSelectedUserId('');
-    
-  } catch (error) {
-    console.error('Ошибка добавления участника:', error);
-    alert('Не удалось добавить участника: ' + error.message);
-  }
-};
+        if (!selectedUserId) return;
+        
+        try {
+            const token = localStorage.getItem('token');
+            let newMember;
+            
+            if (activeChat.type === 'group') {
+                const chatId = activeChat.id.replace('chat_', '');
+                
+                const response = await fetch(`http://localhost:5001/api/chats/${chatId}/members`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ userId: parseInt(selectedUserId) })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Ошибка добавления участника');
+                }
+                
+                newMember = await response.json();
+                console.log('✅ Участник добавлен в группу:', newMember);
+            }
+            
+            // ✅ ОБНОВЛЯЕМ ЛОКАЛЬНЫЙ СПИСОК
+            setMembers(prev => [...prev, newMember]);
+            
+            // ✅ ОТПРАВЛЯЕМ СОБЫТИЕ ЧЕРЕЗ СОКЕТ
+            if (socketRef?.current) {
+                socketRef.current.emit('add_member', {
+                    chatId: activeChat.id,
+                    userId: parseInt(selectedUserId),
+                    chatType: 'group'
+                });
+            }
+            
+            // ✅ ВЫЗЫВАЕМ onMemberAdded ДЛЯ ОБНОВЛЕНИЯ groupChats В APP
+            if (onMemberAdded && newMember) {
+                onMemberAdded(activeChat.id, newMember);
+            }
+            
+            setShowAddMember(false);
+            setSelectedUserId('');
+            
+        } catch (error) {
+            console.error('❌ Ошибка добавления участника:', error);
+            alert('Не удалось добавить участника: ' + error.message);
+        }
+    };
+
 
   // 🔕 ФУНКЦИЯ ЗАГРУЗКИ СТАТУСА "НЕ БЕСПОКОИТЬ"
   const fetchMuteStatus = async () => {
@@ -292,48 +298,51 @@ const handleAddMember = async () => {
     }
   };
 
-  // Удалить участника
-  const handleRemoveMember = async (userId) => {
-    if (!confirm('Удалить участника из канала?')) return;
+
+// Удалить участника (универсально для каналов и групповых чатов)
+// Удалить участника (универсально для каналов и групповых чатов)
+const handleRemoveMember = async (userId) => {
+    const isChannel = activeChat.type === 'channel';
+    const isGroup = activeChat.type === 'group';
+    
+    const chatTypeLabel = isChannel ? 'канала' : 'группового чата';
+    if (!confirm(`Удалить участника из ${chatTypeLabel}?`)) return;
     
     try {
-      const token = localStorage.getItem('token');
-      const channelId = activeChat.id.replace('channel_', '');
-      
-      const response = await fetch(`http://localhost:5001/api/channels/${channelId}/members/${userId}`, {
-        method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      
-      if (!response.ok) throw new Error('Ошибка удаления участника');
-      
-      setMembers(members.filter(m => m.userId !== userId));
+        const token = localStorage.getItem('token');
+        let chatTypeForSocket;
+        
+        if (isChannel) {
+            chatTypeForSocket = 'channel';
+        } else if (isGroup) {
+            chatTypeForSocket = 'group';
+        } else {
+            alert('❌ Нельзя удалять участников из этого типа чата');
+            return;
+        }
+        
+        // ✅ ТОЛЬКО SOCKET — БЕЗ HTTP!
+        if (socketRef?.current) {
+            console.log(`📤 Отправляю remove_member: chatId=${activeChat.id}, userId=${userId}, chatType=${chatTypeForSocket}`);
+            socketRef.current.emit('remove_member', {
+                chatId: activeChat.id,
+                userId: userId,
+                chatType: chatTypeForSocket
+            });
+            
+            // ✅ ОБНОВЛЯЕМ ЛОКАЛЬНЫЙ СПИСОК МГНОВЕННО (оптимистичное обновление)
+            setMembers(prev => prev.filter(m => m.userId !== userId));
+            console.log(`✅ Локально удален участник ${userId} из списка`);
+        } else {
+            alert('❌ Нет подключения к серверу');
+        }
+        
     } catch (error) {
-      console.error('Ошибка удаления участника:', error);
-      alert('Не удалось удалить участника');
+        console.error('Ошибка удаления участника:', error);
+        alert('Не удалось удалить участника: ' + error.message);
     }
-  };
-// Удалить участника из группового чата
-const handleRemoveChatMember = async (userId) => {
-  if (!confirm('Удалить участника из группового чата?')) return;
-  
-  try {
-    const token = localStorage.getItem('token');
-    const chatId = activeChat.id.replace('chat_', '');
-    
-    const response = await fetch(`http://localhost:5001/api/chats/${chatId}/members/${userId}`, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    
-    if (!response.ok) throw new Error('Ошибка удаления участника');
-    
-    setMembers(members.filter(m => m.userId !== userId));
-  } catch (error) {
-    console.error('Ошибка удаления участника из чата:', error);
-    alert('Не удалось удалить участника');
-  }
 };
+
   if (!isOpen || !activeChat) return null;
 
   const messages = activeChat?.messages || [];
@@ -708,20 +717,16 @@ return (
                                             </span>
                                         </div>
                                     </div>
-                                    {isAdmin && member.role !== 'admin' && (
-                                        <button 
-                                            onClick={() => {
-                                                if (activeChat.type === 'channel') {
-                                                    handleRemoveMember(member.userId);
-                                                } else if (activeChat.type === 'group') {
-                                                    handleRemoveChatMember(member.userId);
-                                                }
-                                            }}
-                                            className="text-xs text-red-400 hover:text-red-300 transition opacity-50 hover:opacity-100"
-                                        >
-                                            Удалить
-                                        </button>
-                                    )}
+
+{isAdmin && member.role !== 'admin' && (
+    <button 
+        onClick={() => handleRemoveMember(member.userId)}
+        className="text-xs text-red-400 hover:text-red-300 transition opacity-50 hover:opacity-100"
+    >
+        Удалить
+    </button>
+)}
+
                                 </div>
                             ))}
                         </div>
