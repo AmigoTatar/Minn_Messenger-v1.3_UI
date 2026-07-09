@@ -745,41 +745,43 @@ socket.on('user_updated', (data) => {
 });
 
 
-
 // === ДОБАВЛЕНИЕ УЧАСТНИКА В КАНАЛ ===
 socket.on('channel_member_added', (data) => {
-    console.log(`➕ Пользователь ${data.member?.userId} добавлен в канал ${data.channelId}`);
+    console.log('🔴🔴🔴 [App] ПОЛУЧЕНО channel_member_added:', data);
+    console.log('🔴 [App] data.channelId:', data.channelId);
+    console.log('🔴 [App] data.member:', data.member);
     
-    if (data.member?.userId === user?.id) {
-        const fetchChannelData = async (channelId) => {
-            try {
-                const token = localStorage.getItem('token');
-                const response = await fetch(`${API_BASE_URL}/api/channels/${channelId}`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
+    setChannels(prev => {
+        const updated = prev.map(channel => {
+            if (channel.id === data.channelId) {
+                const memberExists = channel.members?.some(m => m.userId === data.member.userId);
+                if (memberExists) return channel;
                 
-                if (response.ok) {
-                    const channelData = await response.json();
-                    console.log('📢 Загружен канал:', channelData);
-                    
-                    setChannels(prev => {
-                        if (prev.some(ch => ch.id === channelData.id)) return prev;
-                        return [...prev, channelData];
-                    });
-                    
-                    if (socketRef.current) {
-                        socketRef.current.emit('join_chat', `channel_${channelData.id}`);
-                    }
-                }
-            } catch (error) {
-                console.error('Ошибка загрузки канала:', error);
+                // ✅ СОЗДАЕМ НОВЫЙ МАССИВ
+                const newMembers = [...(channel.members || []), data.member];
+                return {
+                    ...channel,
+                    members: newMembers,
+                    _updatedAt: Date.now()
+                };
             }
-        };
-        
-        fetchChannelData(data.channelId);
+            return channel;
+        });
+        return updated;
+    });
+    
+    if (activeChatId === `channel_${data.channelId}`) {
+        setActiveChatData(prev => {
+            if (!prev) return prev;
+            const memberExists = prev.members?.some(m => m.userId === data.member.userId);
+            if (memberExists) return prev;
+            return {
+                ...prev,
+                members: [...(prev.members || []), data.member]
+            };
+        });
     }
 });
-
 
 // === СЛУШАТЕЛЬ УДАЛЕНИЯ КАНАЛА ===
 socket.on('channel_deleted', ({ channelId }) => {
@@ -1089,35 +1091,21 @@ socket.on('unread_updated', (data) => {
 });
 
 
+
 // === ДОБАВЛЕНИЕ УЧАСТНИКА В ГРУППОВОЙ ЧАТ ===
 socket.on('chat_member_added', (data) => {
     console.log('🔴🔴🔴 [App] ПОЛУЧЕНО chat_member_added:', data);
-    console.log('🔴 [App] Тип data:', typeof data);
-    console.log('🔴 [App] data.chatId:', data.chatId);
-    console.log('🔴 [App] data.member:', data.member);
-    console.log('🔴 [App] Текущий groupChats:', groupChats)
-    // ✅ ОБНОВЛЯЕМ groupChats (ДЛЯ САЙДБАРА)
+    
     setGroupChats(prev => {
-        console.log('🔄 [App] Текущий groupChats до обновления:', prev);
-        
         const updated = prev.map(chat => {
-            // Сравниваем по id и dbId
             const chatIdStr = chat.id?.toString() || `chat_${chat.dbId}`;
-            const targetId = `chat_${data.chatId}`;
-            
-            console.log(`   Сравниваю: ${chatIdStr} === ${targetId}, dbId: ${chat.dbId} === ${data.chatId}`);
-            
-            if (chatIdStr === targetId || chat.dbId === data.chatId) {
-                // Проверяем, есть ли уже такой участник
+            if (chatIdStr === `chat_${data.chatId}` || chat.dbId === data.chatId) {
                 const memberExists = chat.members?.some(m => m.userId === data.member.userId);
                 if (memberExists) {
-                    console.log(`⚠️ Участник ${data.member.userId} уже есть в чате ${chat.name}`);
+                    console.log(`⚠️ Участник ${data.member.userId} уже есть`);
                     return chat;
                 }
-                
                 console.log(`✅ Добавляю участника ${data.member.userId} в чат ${chat.name}`);
-                console.log(`   Было участников: ${chat.members?.length || 0}`);
-                
                 return {
                     ...chat,
                     members: [...(chat.members || []), data.member],
@@ -1126,19 +1114,17 @@ socket.on('chat_member_added', (data) => {
             }
             return chat;
         });
-        
-        console.log('📊 [App] Обновленный groupChats:', updated);
-        return updated;
+        return [...updated]; // ✅ НОВЫЙ МАССИВ
     });
     
-    // ✅ ФОРСИРУЕМ ОБНОВЛЕНИЕ САЙДБАРА
+    // ✅ ФОРСИРУЕМ ОБНОВЛЕНИЕ
     setGroupChatsVersion(prev => {
         const newVersion = prev + 1;
         console.log(`🔄 [App] groupChatsVersion: ${prev} -> ${newVersion}`);
         return newVersion;
     });
     
-    // ✅ ОБНОВЛЯЕМ activeChatData (если этот чат активен)
+    // ✅ ОБНОВЛЯЕМ activeChatData
     if (activeChatId === `chat_${data.chatId}`) {
         setActiveChatData(prev => {
             if (!prev) return prev;
@@ -1978,9 +1964,13 @@ const chatsWithMessages = chats.map(chat => {
           onClose={() => setIsProfileOpen(false)} 
           socketRef={socketRef}
           onMemberAdded={(chatId, member) => {
-        // ✅ ОБНОВЛЯЕМ groupChats
+    console.log('🔄 [App] onMemberAdded вызван:', chatId, member);
+    
+    // ✅ ДЛЯ ГРУППОВЫХ ЧАТОВ
+    if (chatId.startsWith('chat_')) {
         setGroupChats(prev => {
-            const updated = prev.map(chat => {
+            // ✅ СОЗДАЕМ ГЛУБОКУЮ КОПИЮ МАССИВА
+            const newChats = prev.map(chat => {
                 if (chat.id === chatId || chat.dbId === parseInt(chatId.replace('chat_', ''))) {
                     const memberExists = chat.members?.some(m => m.userId === member.userId);
                     if (memberExists) return chat;
@@ -1992,27 +1982,36 @@ const chatsWithMessages = chats.map(chat => {
                 }
                 return chat;
             });
-            return updated;
-        });
-        setGroupChatsVersion(prev => prev + 1);
-    }}
-    onChatDeleted={(chatId) => {
-        // ✅ ОБНОВЛЯЕМ groupChats ПРИ УДАЛЕНИИ
-        setGroupChats(prev => {
-            const filtered = prev.filter(chat => {
-                const chatIdStr = chat.id?.toString() || `chat_${chat.dbId}`;
-                return chatIdStr !== `chat_${chatId}` && chat.dbId !== chatId;
-            });
-            return filtered;
+            return [...newChats]; // ✅ НОВЫЙ МАССИВ
         });
         
-        // ✅ ПЕРЕКЛЮЧАЕМСЯ НА ОБЩИЙ ЧАТ
-        if (activeChatId === `chat_${chatId}`) {
-            setActiveChatData(null);
-            setActiveChatId('chat_general');
-            setMessages([]);
-        }
-    }}
+        // ✅ ФОРСИРУЕМ ОБНОВЛЕНИЕ
+        setGroupChatsVersion(prev => {
+            const newVersion = prev + 1;
+            console.log(`🔄 [App] groupChatsVersion: ${prev} -> ${newVersion}`);
+            return newVersion;
+        });
+    }
+    
+    // ✅ ДЛЯ КАНАЛОВ
+    if (chatId.startsWith('channel_')) {
+        setChannels(prev => {
+            const newChannels = prev.map(channel => {
+                if (channel.id === parseInt(chatId.replace('channel_', ''))) {
+                    const memberExists = channel.members?.some(m => m.userId === member.userId);
+                    if (memberExists) return channel;
+                    return {
+                        ...channel,
+                        members: [...(channel.members || []), member],
+                        _updatedAt: Date.now()
+                    };
+                }
+                return channel;
+            });
+            return [...newChannels];
+        });
+    }
+}}
 />
         
       </div>

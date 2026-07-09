@@ -286,6 +286,19 @@ useEffect(() => {
     console.log('🔄 [Sidebar] groupChats:', groupChats);
 }, [groupChatsVersion, groupChats]);
 
+
+// В Sidebar.jsx, после других useEffect
+useEffect(() => {
+    console.log('🔄 [Sidebar] groupChats обновлен, количество участников:', 
+        groupChats.map(c => ({ name: c.name, members: c.members?.length || 0 }))
+    );
+}, [groupChats]);
+
+useEffect(() => {
+    console.log('🔄 [Sidebar] Перерисовка из-за groupChatsVersion:', groupChatsVersion);
+}, [groupChatsVersion]);
+
+
 useEffect(() => {
     if (user?.avatar) {
         setLocalAvatar(user.avatar);
@@ -628,15 +641,16 @@ useEffect(() => {
                 <span className="text-[9px] text-zinc-500">({groupChats.length})</span>
             </div>
 
-            {groupChats.map((chat) => {
-                if (!chat) return null;
-                
-                const isActive = activeChatId === chat.id;
-                const lastMessage = chat.lastMessage || null;
-                const membersCount = chat.members?.length || 0;
-                const chatKey = `group-${chat.id || chat.dbId}-${membersCount}`;
-                const chatId = chat.id?.toString() || `chat_${chat.dbId || chat.id}`;
-                const unreadCount = unreadCounts[chatId] || 0;
+{groupChats.map((chat) => {
+  if (!chat) return null;
+  
+  const isActive = activeChatId === chat.id;
+  const lastMessage = chat.lastMessage || null;
+  const membersCount = chat.members?.length || 0;
+  // ✅ ДОБАВЛЯЕМ groupChatsVersion В KEY
+  const chatKey = `group-${chat.id || chat.dbId}-${membersCount}-${groupChatsVersion}`;
+  const chatId = chat.id?.toString() || `chat_${chat.dbId || chat.id}`;
+  const unreadCount = unreadCounts[chatId] || 0;
                 
                 return (
                     <button
